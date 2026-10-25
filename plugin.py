@@ -5,10 +5,8 @@ from datetime import datetime, time, timedelta
 from hashlib import sha256
 from time import monotonic
 from typing import Any
-from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from icalendar import Calendar, Event
 from maibot_sdk import Command, Field, HookHandler, MaiBotPlugin, PluginConfigBase, Tool
 from maibot_sdk.types import HookMode
 
@@ -25,11 +23,13 @@ from .imports import (
     call_snowluma_api, ics_files, own_text, quoted_message_id, safe_api_error, snowluma_source, snowluma_summary,
 )
 from .query import query_schedule
+from .management import add_course, manage_schedule
 from .store import Store
 
 HELP = """个人课表（所有指令只操作你在本群的课表）
 也可以直接问：明天有什么课？这周有哪些课？下一节课在哪？
 早八查询：明天有早八吗？这周哪几天没早八？下一次早八是什么课？
+自然语言维护：把明天的高数调到后天10点、明天英语停一次、这次课换到教二202。
 上传 .ics 自动合并；关闭自动导入时，上传后用 /课表 解析。
 也可以引用自己上传的 ICS 文件消息，再发送 /课表 解析。
 /课表 解析 [合并|替换]  —— 替换会移除旧课程与本地调课
@@ -170,7 +170,8 @@ class TimetablePlugin(MaiBotPlugin):
         description=("查询当前群聊中提问者自己的真实课程表。用户问‘明天有什么课’、‘今天下午上什么课’、"
                      "‘这周的课表’、‘下周一英语在哪上’、‘下一节课在哪’、‘明天有早八吗’、"
                      "‘这周哪几天没早八’、‘下一次早八是什么课’时必须调用此工具读取课表，"
-                     "不要从聊天记忆猜测。只读查询，不会修改课程。日期由插件按成员时区解析。"
+                     "不要从聊天记忆猜测。只读查询，不会修改课程。用户要求调整已有课表时，也先用此工具确定"
+                     "真实课次，再调用 manage_timetable；有多个匹配课次时先询问，不要擅自任选或批量修改。日期由插件按成员时区解析。"
                      "早八按08:00（含）至09:00（不含）开始的课统计：time_of_day填早八，"
                      "period填用户指定日期；未说日期默认明天。早八是时间条件，不是科目，subject不要填早八。"
                      "问下一次早八时period填下一次早八，查询未来31天内尚未开始的课程。"
@@ -209,6 +210,58 @@ class TimetablePlugin(MaiBotPlugin):
                 return await asyncio.to_thread(query_schedule, self.store, owner, period, days, subject, time_of_day)
             except (ValueError, ZoneInfoNotFoundError) as exc:
                 return {"success": False, "content": str(exc)}
+
+    @Tool(
+        "manage_timetable",
+        description=("按当前群用户的明确请求实际维护自己的课表，包括自然语言加课、调课、换教室、停课、改课、"
+                     "删课和恢复。先用 query_timetable 查真实课次再传 lesson_id；同名、多节或目标含糊时先询问用户。"
+                     "只调整一次课用调课或停课；只有用户明确说整门课/所有周时才用改课、删课或恢复。"
+                     "加课需要用户给出日期、科目、开始和结束时间；周数默认1，未给结束时间先询问，不能编造。"
+                     "调课可只填新教室，日期或开始时间未填保留原值，结束时间未填保留原时长。"
+                     "日期保留用户相对说法，由插件按成员时区解析。不能将第几节课猜成钟点。"
+                     "课程列表为只读，可查含停用课程的 course_id；恢复会撤销整门课全部本地修改及停课。"
+                     "不能替其他成员操作。message_id 取本次请求的用户消息前缀 msg_id，不能用旧查询或机器人消息。"
+                     "必须依据 success 和实际 before/after 数据通过 reply 自然说明，失败时不能声称已修改。"),
+        parameters={
+            "message_id": {"type": "string", "description": "本次明确请求维护课表的用户消息 msg_id，Host 会还原短别名。", "required": True},
+            "action": {"type": "string", "enum": ["加课", "调课", "停课", "改课", "删课", "恢复", "课程列表"],
+                       "description": "调课/停课只影响一次；改课/删课/恢复影响整门课；课程列表只读。", "required": True},
+            "lesson_id": {"type": "string", "description": "调课/停课必填；query_timetable 刚返回的真实课次编号。", "default": ""},
+            "course_id": {"type": "string", "description": "改课/删课/恢复必填；查询返回的真实课程编号。", "default": ""},
+            "date": {"type": "string", "description": "加课必填、调课可选的目标日期：今天、明天、后天、下周一或YYYY-MM-DD，必须是单天。", "default": ""},
+            "start_time": {"type": "string", "description": "目标上课时间HH:MM；加课必填，调课可选。", "default": ""},
+            "end_time": {"type": "string", "description": "目标下课时间HH:MM；加课必填，调课未填保留原时长。", "default": ""},
+            "subject": {"type": "string", "description": "加课的科目、改课的新名称，或课程列表筛选关键词；调课/停课不用此字段筛选。", "default": ""},
+            "classroom": {"type": "string", "description": "教室；调课/改课留空表示保留原教室，加课留空表示未填写。", "default": ""},
+            "weeks": {"type": "integer", "description": "仅加课可用：从目标日每周一次，共1~104次；默认只加一次。", "minimum": 1, "maximum": 104, "default": 1},
+        },
+        visibility="visible",
+    )
+    async def manage_timetable(self, action="", message_id="", lesson_id="", course_id="", date="",
+                               start_time="", end_time="", subject="", classroom="", weeks=1, **context):
+        if not self.config.plugin.enabled:
+            return {"success": False, "content": "课表插件已关闭，未修改课表。"}
+        try:
+            if not isinstance(message_id, str) or not message_id.strip():
+                raise ValueError("维护课表必须提供本次用户请求的 message_id")
+            owner, stream_id = await self.query_owner(message_id, context)
+            async with self.locks[owner]:
+                try:
+                    member = await asyncio.to_thread(self.store.get_member, owner)
+                except ValueError:
+                    if action != "加课":
+                        raise ValueError("你还没有在本群建立个人课表，请先上传 ICS 或明确要求加课") from None
+                    uid = json.loads(owner)[2]
+                    await asyncio.to_thread(self.store.member, owner, stream_id, uid, uid,
+                                            self.config.timetable.default_timezone)
+                    member = await asyncio.to_thread(self.store.get_member, owner)
+                if member["stream"] != stream_id:
+                    raise ValueError("当前群聊上下文与课表归属不一致，未修改课表")
+                return await asyncio.to_thread(manage_schedule, self.store, owner, action, message_id=message_id,
+                                              lesson_id=lesson_id, course_id=course_id, date=date, start_time=start_time,
+                                              end_time=end_time, subject=subject, classroom=classroom, weeks=weeks)
+        except (ValueError, ZoneInfoNotFoundError) as exc:
+            return {"success": False, "content": str(exc), "error": str(exc)}
 
     @HookHandler("chat.receive.before_process", name="receive_ics", mode=HookMode.OBSERVE, timeout_ms=45000)
     async def receive_ics(self, message=None, **kwargs):
@@ -358,18 +411,7 @@ class TimetablePlugin(MaiBotPlugin):
             weeks = int(values[5]) if len(values) == 6 else 1
             if not 1 <= weeks <= 104:
                 raise ValueError("周数应为 1~104")
-            calendar, event = Calendar(), Event()
-            calendar.add("VERSION", "2.0")
-            calendar.add("PRODID", "-//Wu//MaiBot Timetable//CN")
-            event.add("UID", f"manual-{uuid4().hex}")
-            event.add("DTSTART", start)
-            event.add("DTEND", end)
-            event.add("SUMMARY", values[3])
-            event.add("LOCATION", values[4])
-            if weeks > 1:
-                event.add("RRULE", {"FREQ": "WEEKLY", "COUNT": weeks})
-            calendar.add_component(event)
-            self.store.import_ics(owner, calendar.to_ical(), "合并")
+            add_course(self.store, owner, start, end, values[3], values[4], weeks)
             return f"已加课：{values[3]}，共 {weeks} 次。"
         if action == "调课" and len(values) in {4, 5}:
             lesson = self.store.select(owner, values[0])

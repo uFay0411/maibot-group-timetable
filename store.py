@@ -169,6 +169,10 @@ class Store:
             db.execute("DELETE FROM changes WHERE owner=? AND id=?", (owner, cid))
 
     def course_list(self, owner: str) -> List[str]:
+        return [f"{x['course_id']} {x['subject']} {'[已停用]' if x['deleted'] else ''}"
+                for x in self.course_details(owner)]
+
+    def course_details(self, owner: str) -> List[dict]:
         with self.connect() as db:
             rows = list(db.execute("SELECT * FROM courses WHERE owner=? ORDER BY id", (owner,)))
         result = []
@@ -176,7 +180,9 @@ class Store:
             events = Calendar.from_ical(row["ics"]).walk("VEVENT")
             patch = json.loads(row["patch"])
             title = patch.get("title", str(events[0].get("SUMMARY", "已取消课程")))
-            result.append(f"{row['id']} {title} {'[已停用]' if patch.get('deleted') else ''}")
+            room = patch.get("room", str(events[0].get("LOCATION", "")))
+            result.append({"course_id": row["id"], "subject": title, "classroom": room or None,
+                           "deleted": bool(patch.get("deleted"))})
         return result
 
     def clear(self, owner: str):

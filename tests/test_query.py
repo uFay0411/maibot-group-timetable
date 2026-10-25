@@ -258,7 +258,7 @@ def test_early_class_tool_schema_and_description():
 def visible_query_data(result):
     # MaiBot 优先使用 content；只检查模型实际收到的字段，不能依赖旁路 lessons 掩盖问题。
     header, body = result["content"].split("\n", 1)
-    assert "实际查询结果" in header
+    assert "实际执行结果" in header
     data, _ = json.JSONDecoder().raw_decode(body)
     return data
 

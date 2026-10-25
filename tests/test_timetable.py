@@ -299,7 +299,10 @@ def test_sdk_components_and_manifest():
     from pathlib import Path
     p = TimetablePlugin()
     components = p.get_components()
-    assert len(components) == 3
+    assert {(x["type"], x["name"]) for x in components} == {
+        ("COMMAND", "timetable"), ("TOOL", "query_timetable"),
+        ("TOOL", "manage_timetable"), ("HOOK_HANDLER", "receive_ics"),
+    }
     manifest = json.loads((Path(__file__).parents[1] / "_manifest.json").read_text(encoding="utf-8"))
     assert "maisaka.reply.generate" in manifest["capabilities"]
     assert p.build_default_config()["timetable"]["default_timezone"] == ZONE

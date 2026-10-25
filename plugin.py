@@ -25,6 +25,7 @@ from .imports import (
 from .query import model_visible_content, query_schedule
 from .management import add_course, manage_schedule
 from .store import Store
+from .semantic import semantic_query
 from .wakeup import fetch_schedule as fetch_wakeup_schedule, to_ics as wakeup_to_ics
 
 HELP = """个人课表（所有指令只操作你在本群的课表）
@@ -174,9 +175,14 @@ class TimetablePlugin(MaiBotPlugin):
         description=("查询当前群聊中提问者自己的真实课程表。用户问‘明天有什么课’、‘今天下午上什么课’、"
                      "‘这周的课表’、‘下周一英语在哪上’、‘下一节课在哪’、‘明天有早八吗’、"
                      "‘这周哪几天没早八’、‘下一次早八是什么课’时必须调用此工具读取课表，"
-                     "科目支持模糊查询：高数、大英、线代等简称、部分缩写和轻微错字交给插件匹配，"
-                     "subject 保留用户原词，不要先猜测全称。只问某门课什么时候上且未给日期时，period填未来31天；"
-                     "根据 subject_matching 的真实课程名回答，多门候选不能任意选一门。"
+                     "科目模糊查询使用你作为 LLM 的语义理解，支持‘思政’等与正式课名用字不同的说法。"
+                     "两步查询：第一次带 subject 原词但不传 course_ids，工具返回当前用户整张课表的真实科目候选；"
+                     "requires_course_selection=true 表示尚未查课次，你必须结合语义选出实际 course_id，"
+                     "再用同一 subject、日期/时段和 message_id 调用本工具，course_ids填所选编号数组。"
+                     "不能因为第一次没有 lessons 就回答未获取到明细或无课。不能只重写 subject 后继续字面查询。"
+                     "例如‘思政’在只有相关思想政治科目的候选中可理解为思想道德与法治；若也有马原等多门可能，"
+                     "先询问，只有用户明确问整类课时才选多门。has_more=true时先继续读取候选页。"
+                     "不指定科目时直接查该日期全部课，不需要选科目。只问某门课什么时候上且未给日期时，period填未来31天；"
                      "不要从聊天记忆猜测。只读查询，不会修改课程。用户要求调整已有课表时，也先用此工具确定"
                      "真实课次，再调用 manage_timetable；有多个匹配课次时先询问，不要擅自任选或批量修改。日期由插件按成员时区解析。"
                      "早八按08:00（含）至09:00（不含）开始的课统计：time_of_day填早八，"
@@ -193,13 +199,18 @@ class TimetablePlugin(MaiBotPlugin):
                        "本周三、下周一或具体日期 YYYY-MM-DD。直接保留用户的相对日期。", "default": "明天"},
             "days": {"type": "integer", "description": "仅具体日期时使用，查询连续几天，1~31。", "default": 1,
                      "minimum": 1, "maximum": 31},
-            "subject": {"type": "string", "description": "可选科目原词，支持高数/大英/线代等简称、关键词及受限模糊匹配；不要自行改写全称，未指定留空。", "default": ""},
+            "subject": {"type": "string", "description": "用户的原始科目说法，如思政、高数。首次返回真实候选，随后由你按语义选择 course_ids；未指定科目留空。", "default": ""},
+            "course_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 100,
+                           "description": "首次有科目查询时省略；读完真实候选后，填按语义选出的 course_id 数组。每个科目一个代表编号即可。不能猜编号；无法确定时先询问用户。"},
+            "catalog_offset": {"type": "integer", "default": 0, "minimum": 0,
+                               "description": "只在读取科目候选时使用，默认0；has_more时使用返回的next_catalog_offset继续读取。"},
             "time_of_day": {"type": "string", "enum": ["全天", "上午", "下午", "晚上", "早八"],
                             "description": "查询时段。问早八填早八（08:00含至09:00不含开始的课）；默认全天。", "default": "全天"},
         },
         visibility="visible",
     )
-    async def query_timetable(self, period="明天", days=1, subject="", time_of_day="全天", message_id="", **context):
+    async def query_timetable(self, period="明天", days=1, subject="", time_of_day="全天", message_id="",
+                              course_ids=None, catalog_offset=0, **context):
         if not self.config.plugin.enabled:
             return {"success": False, "content": "课表插件已关闭。"}
         try:
@@ -214,7 +225,8 @@ class TimetablePlugin(MaiBotPlugin):
             if member["stream"] != stream_id:
                 return {"success": False, "content": "当前群聊上下文与课表归属不一致，无法查询。"}
             try:
-                return await asyncio.to_thread(query_schedule, self.store, owner, period, days, subject, time_of_day)
+                return await asyncio.to_thread(semantic_query, self.store, owner, period, days, subject, time_of_day,
+                                               course_ids, catalog_offset)
             except (ValueError, ZoneInfoNotFoundError) as exc:
                 return {"success": False, "content": str(exc)}
 

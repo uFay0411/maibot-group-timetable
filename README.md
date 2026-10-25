@@ -1,0 +1,138 @@
+# 群聊个人课表提醒
+
+为每名群成员分别维护课表，在上课前 20 分钟调用 MaiBot 的 `ctx.maisaka.reply.generate()`，复用 Replyer 人格、表达方式选择和回复 Hook，生成简短提醒，再通过 Host 发送带真实 `@成员` 的消息并同步聊天历史。提醒正文由 MaiBot 生成；不使用固定提醒句式，也不调用独立模型 API。
+
+[下载安装包](https://github.com/uFay0411/maibot-group-timetable/releases/latest) · [问题反馈](https://github.com/uFay0411/maibot-group-timetable/issues) · [更新日志](CHANGELOG.md)
+
+## 安装
+
+适用于本次验证的 MaiBot **1.3.15**、`maibot-plugin-sdk` **2.16.0**。不支持旧版 `src.plugin_system` 插件接口。主程序需要提供 `maisaka.reply.generate`、`send.hybrid`、`send.text`、`message.get_by_id`、`api.call` 和 `api.list` 能力。
+
+1. 从 [Releases](https://github.com/uFay0411/maibot-group-timetable/releases/latest) 下载 `group_timetable-版本号.zip`，在 MaiBot WebUI 使用“从 ZIP 安装插件”。也可解压整个 `group_timetable` 文件夹到实例的 `plugins/` 下，保留 `_manifest.json` 与 `plugin.py`。升级请保留已有配置和数据。
+2. 在该实例使用的 Python 环境安装 `requirements.txt` 中的依赖。例如在 MaiBot 根目录执行：
+
+   ```powershell
+   uv pip install -r plugins/group_timetable/requirements.txt
+   ```
+
+   启用插件依赖安装流程的 Host 也可根据 manifest 自动安装第三方依赖。
+3. 重启或通过 WebUI 加载插件，按 Host 界面授予 manifest 中的能力。ZIP 随带完整默认 `config.toml`（来自 `config.default.toml`），不含个人设置或课表数据；源码安装也可将模板复制为 `config.toml`。
+4. 在允许机器人发言的群中上传自己的 `.ics` 文件。默认自动合并导入，也可以引用这条文件消息发送 `/课表 解析`，再用 `/课表 今天` 检查结果。
+
+### SnowLuma 群文件与引用导入
+
+1. 在统一 QQ 连接器的现有 `[notice]` 节中确认 `enabled = true`、`enable_group_upload = true`，不要重复创建同名配置节。关闭这两个开关会使群文件上传通知无法进入 MaiBot。
+2. 升级课表插件后，按 Host 提示允许 `message.get_by_id`、`api.call` 和 1.2.2 新增的 `api.list` 能力。
+3. 将自己的 ICS 发到群里，引用该文件消息，发送 `/课表 解析`（默认合并）或 `/课表 解析 替换`（明确替换自己的旧课表）。
+
+插件同时支持两条路径：监听群文件上传通知并取得文件 ID，通过连接器的 `adapter.snowluma.file.get_group_file_url` 获取实际下载链接；或读取被引用的消息，必要时通过 `adapter.snowluma.message.get_msg` 取得原始文件消息段。连接器转成文本的文件摘要也可通过后一条路径恢复，不从摘要猜测文件内容。
+
+引用编号、原消息上传者和群号必须与当前用户、当前群一致；不会修改他人课表。指定引用找不到时会报错，**不会悄悄改用最近缓存的另一份课表**。链接获取、文件读取或 ICS 验证失败时保留原课表。没有引用时 `/课表 解析` 仍解析本人最近一次有效上传。
+
+不需要另填 SnowLuma 地址、端口或 token，全部通过已连接的适配器公开 API 调用。连接器版本必须提供上述 API；只有 SnowLuma 客户端、未加载 MaiBot 统一 QQ 连接器时不能调用。接口和通知配置依据 [官方适配器源码](https://github.com/Mai-with-u/MaiBot-SnowLuma-Adapter) 与 [官方接入说明](https://docs.mai-mai.org/manual/adapters/qq-local-client)。
+
+1.2.2 在调用前通过 Host 的 `api.list` 读取 `maibot-team.snowluma-adapter` 实际注册的公开、已启用接口，使用返回的完整名称和版本调用。`adapter.snowluma.*` 与 `adapter.napcat.*` 是同一统一 QQ 连接器提供的两组名称，并非切换或另连客户端；优先使用已注册的 SnowLuma 名称，只有登记了另一组名称时使用该组。接口不存在、未启用或 Host 返回 `success=false,error=...` 时，会保留具体拒绝原因并提示，不再笼统误报为消息归属错误。日志和群回复中的错误信息会去掉链接和鉴权值。
+
+1.2.1 兼容 SnowLuma 在历史记录缺少 `message_id` 时只补 `real_id` 的返回方式，以及标准 OneBot 响应包。有明确 `message_id` 时仍严格核对，不会用另一个 `real_id` 掩盖编号冲突；负数消息 ID 保留原值。若仍无法确认引用归属，群里会区分报告具体错误，插件日志中的“引用校验失败”会列出请求编号、当前群号与返回编号/群号等字段，不记录正文、文件内容、下载链接或 token。需要排查时只需提供这一行日志，无需提供完整消息响应。依据：[SnowLuma get_msg 实现与回归测试](https://github.com/SnowLuma/SnowLuma/blob/main/packages/onebot/tests/actions-message.test.ts)。
+
+### 已有配置提示缺少 plugin.config_version
+
+若 WebUI 配置文件只有 `[plugin]` 与 `enabled = true`，请在同一个 `[plugin]` 配置节下增加：
+
+```toml
+config_version = "1.0.0"
+```
+
+保存后由 Host 重新校验并恢复。其他已有配置保持原值；不需要清空课表或删除数据库。Host 会先检查配置版本，缺少版本号时不会先调用插件补齐默认值。插件发布版本 1.0.1 的配置结构未变，因此配置版本仍为 1.0.0。
+
+插件源码和发布包只包含插件本身，不修改 MaiBot 主程序或实际机器人配置。
+
+## 群内指令
+
+### 自然语言查询
+
+导入课表后，可以直接在群聊中问麦麦：
+
+- “明天有什么课？”
+- “今天下午有什么课？”
+- “这周有哪些课？”
+- “下周一英语在哪上？”
+- “我的下一节课在哪？”
+
+插件注册了对 MaiBot Planner 可见的 `query_timetable` 工具。麦麦收到提问后可调用该工具，按提问者在当前群导入的课表查询，再用 `reply` 按当前人设回答；不需要输入 `/课表`。消息需要正常触发麦麦处理（例如 @ 麦麦），是否发起工具调用由当前模型决定。工具返回真实课程、时间和教室，不通过记忆猜测。
+
+支持今天、明天、后天、本周、下周、未来7天、下一节、具体日期及本周/下周指定星期，也可按科目关键词和上午/下午/晚上筛选。相对日期按成员课表时区计算；“下一节”查找未来7天内尚未开始的课，同一时刻冲突的课程都会返回。没有导入课表会提示先上传 ICS，查询无课时明确返回无课。
+
+该工具只读，不接受模型填写用户 QQ 号或群号。1.2.3 起工具要求 `message_id`：由麦麦从本次提问消息前缀的 `msg_id` 自动取得（短别名由 Host 还原），再通过 `message.get_by_id` 在当前聊天流内读取真实作者及群号。用户不需要手动提供编号。群聊天流通常没有固定 `user_id`，不能把它误当作本次提问者；也不会取最近一名发言者来猜测。实际消息必须属于当前群，并与 Host 已提供的身份字段一致，否则拒绝读取。
+
+不会通过自然语言查询修改课表。使用新版本覆盖插件源码时保留现有 `config.toml` 和 Host 数据目录，不要用包内默认配置覆盖自己的设置；新增的 `query.py`、`imports.py` 也需要一起复制。升级到 1.2.3 后重载插件或重启 MaiBot，使 Planner 获得包含 `message_id` 的新工具定义；若模型仍使用旧参数，工具会明确提示带上提问消息编号重试。
+
+### 维护指令
+
+所有操作只针对**当前平台、当前群、当前发送者**。成员不能指定其他人的 ID 来修改课表。同一个人在不同群上传的课表也分别保存。
+
+| 指令 | 用途 |
+| --- | --- |
+| `/课表 帮助` | 查看全部用法 |
+| `/课表 解析` 或 `/课表 解析 合并` | 有引用时读取被引用的本人 ICS，否则读取本群最近一次有效上传；更新相同 UID，保留其他课程及本地调课 |
+| `/课表 解析 替换` | 用引用的本人 ICS（无引用时为最近上传）替换自己的全部课程，清除本地调课、加课和停课设置 |
+| `/课表 今天`、`明天`、`本周`、`下周` | 查询课程与课次编号 |
+| `/课表 查询 2026-10-26 7` | 从指定日期查询 7 天，最多 31 天；每次最多显示 60 节 |
+| `/课表 课程` | 查看课程编号，包括已停用课程，便于恢复 |
+| `/课表 加课 2026-10-26 08:00 09:40 高等数学 教一101` | 新增一次课程 |
+| `/课表 加课 2026-10-26 08:00 09:40 高等数学 教一101 16` | 从该日开始每周同一时间上课，共 16 次 |
+| `/课表 调课 课次编号 2026-10-27 10:00 11:40 教二202` | 修改一次课的日期、时间和可选教室，其他周保持不变 |
+| `/课表 停课 课次编号` | 取消一次课 |
+| `/课表 改课 课程编号 线性代数 教三303` | 修改整门课的科目与默认教室；单次调课教室优先 |
+| `/课表 删课 课程编号` | 停用整门课，保留记录供恢复 |
+| `/课表 恢复 课程编号` | 撤销该课程全部本地修改与停课，恢复最近导入的内容 |
+| `/课表 提醒 开`、`/课表 提醒 关` | 开关自己在本群的提醒 |
+| `/课表 时区 Asia/Shanghai` | 设置显示时区和以后导入的浮动时间解释方式 |
+| `/课表 状态` | 查看提醒开关、时区、已发送与发送结果未知的数量 |
+| `/课表 清空 确认` | 清空自己的本群课程、修改记录与最近上传文件 |
+
+`课次编号` 形如 `a1b2c3d4e5f6@20261026T0800`，直接复制查询结果中的内容。`课程编号` 是 `@` 前的部分，也可用 `/课表 课程` 取得。调课后再次修改，请重新查询以取得新的课次编号。含空格的科目/教室用双引号包围，例如 `"College English" "Room 101"`。
+
+换教室而不换时间时，用“调课”填写原日期和时间即可。修改所有周的教室使用“改课”。每天的单双周、节假日停课由 ICS 的规则决定；也可以用单次停课、加课维护。
+
+## ICS 与文件接收
+
+- 读取 `SUMMARY` 作为科目、`LOCATION` 作为教室，支持 `DTSTART`、`DTEND` / `DURATION`、UTC、TZID、VTIMEZONE 和浮动时间。
+- 使用 `icalendar` 与 `recurring-ical-events` 解析重复规则，支持每周、隔周、COUNT / UNTIL、RDATE、EXDATE、RECURRENCE-ID 调课与 STATUS:CANCELLED。保留规则按日期查询，不把无限重复课截断成固定学期。
+- 只导入有具体时间的课程，跳过全天事项；没有可导入课程时拒绝操作。缺失 UID、科目、结束时间或时间错误会拒绝整次导入，原课表不变。一个文件最多 2 MiB / 5000 个事件，不支持小时、分钟、秒级重复。
+- 支持 Host 的 `file` 消息段 `data.name`、`data.url` / `data.base64`，以及统一 QQ 连接器的结构化 `group_upload` 通知。QQ 文件只有 `file_id` 时通过适配器公开 API 换取下载链接；不会把本地路径或文件名当作可下载内容，不假设 OneBot 端口，不改适配器源码。
+- HTTP(S) 下载有体积和超时限制，不跟随重定向。内网下载服务需在配置的 `allowed_file_hosts` 中填入实际主机名/IP（不含协议和端口）。
+- 默认每次上传自动合并，不删除文件里已经消失的旧课程；换学期请明确使用“解析 替换”。合并以 UID 识别同一门课程，导出工具如果改变 UID，请使用替换模式避免重复。
+- 文件内的课程名称仅当作数据传给 Replyer；不会被当作插件指令执行。科目和教室应写在 SUMMARY / LOCATION，不从 DESCRIPTION 猜测。
+
+## 提醒与数据维护
+
+默认每 15 秒检查一次，从课前 20 分钟开始生成提醒。实际发送时间受检查间隔和模型响应耗时影响。同一成员同一时刻有多门课时合成一条消息，添加一个真实 @。生成结果必须包含所有课程的原始科目、已知教室和 `HH:MM` 时间，否则不发送，在宽限窗口内重试；没有模板兜底。教室未填写时要求 Replyer 说明未知，不编造。
+
+生成期间可正常调课或关提醒；发送前会重新核对当前课程。停课、删除、改教室或时间的旧提醒会被取消。默认只补发提醒时点之后 3 分钟内错过的提醒，长时间离线不会刷出全天历史提醒；不开课后补提醒。
+
+数据保存于 Host 提供的 `ctx.paths.data_dir/timetable.sqlite3`（通常为 `data/plugins/wu.group-timetable/`）。关机维护时复制该数据库即可备份，插件热重载或进程重启不丢课表。已成功发送的提醒不会因为重启重复发送。生成阶段中断可以重试；发送阶段结果未知时保留 pending，避免平台已收到但 RPC 返回丢失造成重复 @。这种情况需要查平台记录与插件日志，插件不会把它冒充为“已发送”。状态统计是历史提醒次数，清空课程不会清空发送审计记录。
+
+配置可通过 WebUI 调整：`plugin.enabled`、`timetable.default_timezone`、`auto_import`、`poll_seconds`、`catch_up_minutes`、`allowed_file_hosts`。时区修改不会移动已经导入课程的真实时刻；浮动时间需要按新时区重新解析。没有额外管理员命令或跨成员编辑入口。
+
+## 验证
+
+测试依赖 `pytest`、`pytest-asyncio`。在已安装 SDK 的 Python 环境中，从插件目录运行：
+
+```powershell
+python -m pytest tests -q
+```
+
+测试使用实际 SDK 插件声明、ICS 解析库与 SQLite，模拟 Replyer 和平台发送，不调用外部模型、不向群聊发送消息。还用本地 MaiBot 的真实 manifest 校验器验证了清单。真实 QQ 文件上传、模型生成的提醒表达和平台 @ 的最终效果仍需在运行中的机器人中联调。
+
+参考：[MaiBot SDK 开发指南](https://github.com/Mai-with-u/maibot-plugin-sdk/blob/main/docs/guide.md)、[recurring-ical-events 文档](https://recurring-ical-events.readthedocs.io/en/stable/)。
+
+## 从源码打包
+
+在仓库根目录执行：
+
+```powershell
+python scripts/build_release.py
+```
+
+脚本按 manifest 版本生成 `dist/group_timetable-版本号.zip`，只包含白名单中的源码、说明、测试与示例；安装用 `config.toml` 始终从默认模板生成，不读取本机实际配置或课表数据库。GitHub 自动生成的 Source code 压缩包是源码快照，WebUI 安装请使用 Release 附件中的安装包。

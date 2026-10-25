@@ -1,0 +1,5 @@
+maibot-plugin-sdk>=2.16,<3
+icalendar>=6.3,<8
+recurring-ical-events>=3.8,<4
+tzdata>=2025.1
+httpx>=0.27,<1

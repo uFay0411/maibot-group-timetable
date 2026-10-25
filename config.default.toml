@@ -1,0 +1,11 @@
+# 安装时使用的完整默认配置。已有配置只需补齐缺失项，不要覆盖个人设置。
+[plugin]
+enabled = true
+config_version = "1.0.0"
+
+[timetable]
+default_timezone = "Asia/Shanghai"
+auto_import = true
+poll_seconds = 15
+catch_up_minutes = 3
+allowed_file_hosts = []

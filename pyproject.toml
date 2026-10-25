@@ -1,0 +1,29 @@
+[project]
+name = "maibot-group-timetable"
+version = "1.2.3"
+description = "按群成员隔离的 ICS 课表与 MaiBot reply 课前提醒"
+requires-python = ">=3.10"
+dependencies = [
+  "maibot-plugin-sdk>=2.16,<3",
+  "icalendar>=6.3,<8",
+  "recurring-ical-events>=3.8,<4",
+  "tzdata>=2025.1",
+  "httpx>=0.27,<1",
+]
+
+[project.urls]
+Repository = "https://github.com/uFay0411/maibot-group-timetable"
+Documentation = "https://github.com/uFay0411/maibot-group-timetable/blob/main/README.md"
+Issues = "https://github.com/uFay0411/maibot-group-timetable/issues"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "B"]
+ignore = ["E501"]

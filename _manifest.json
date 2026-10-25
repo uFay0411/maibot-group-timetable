@@ -1,0 +1,25 @@
+{
+  "manifest_version": 2,
+  "id": "wu.group-timetable",
+  "name": "群聊个人课表提醒",
+  "version": "1.2.3",
+  "description": "支持自然语言调用工具查询个人课表、解析 ICS、调课加课及课前20分钟通过 MaiBot reply 提醒",
+  "author": {"name": "Wu", "url": "https://github.com/uFay0411"},
+  "license": "GPL-3.0-or-later",
+  "urls": {
+    "repository": "https://github.com/uFay0411/maibot-group-timetable",
+    "homepage": "https://github.com/uFay0411/maibot-group-timetable",
+    "documentation": "https://github.com/uFay0411/maibot-group-timetable/blob/main/README.md",
+    "issues": "https://github.com/uFay0411/maibot-group-timetable/issues"
+  },
+  "i18n": {"default_locale": "zh-CN", "supported_locales": ["zh-CN"]},
+  "host_application": {"min_version": "1.3.15", "max_version": "1.3.99"},
+  "sdk": {"min_version": "2.16.0", "max_version": "2.99.99"},
+  "dependencies": [
+    {"type": "python_package", "name": "icalendar", "version_spec": ">=6.3,<8"},
+    {"type": "python_package", "name": "recurring-ical-events", "version_spec": ">=3.8,<4"},
+    {"type": "python_package", "name": "tzdata", "version_spec": ">=2025.1"},
+    {"type": "python_package", "name": "httpx", "version_spec": ">=0.27,<1"}
+  ],
+  "capabilities": ["send.text", "send.hybrid", "maisaka.reply.generate", "message.get_by_id", "api.call", "api.list"]
+}

@@ -30,12 +30,14 @@ from .wakeup import fetch_schedule as fetch_wakeup_schedule, to_ics as wakeup_to
 HELP = """个人课表（所有指令只操作你在本群的课表）
 也可以直接问：明天有什么课？这周有哪些课？下一节课在哪？
 早八查询：明天有早八吗？这周哪几天没早八？下一次早八是什么课？
+模糊查课：明天高数在哪上？这周有线代吗？大英什么时候上？
 自然语言维护：把明天的高数调到后天10点、明天英语停一次、这次课换到教二202。
 上传 .ics 自动合并；关闭自动导入时，上传后用 /课表 解析。
 也可以引用自己上传的 ICS 文件消息，再发送 /课表 解析。
 /课表 解析 [合并|替换]  —— 替换会移除旧课程与本地调课
 /课表 wakeup [合并|替换] 分享口令或完整分享文案
 /课表 今天 | 明天 | 本周 | 下周 | 查询 YYYY-MM-DD [天数1~31]
+/课表 搜索 科目关键词 [日期或本周等] [天数1~31]  —— 默认未来31天
 /课表 加课 YYYY-MM-DD HH:MM HH:MM 科目 教室 [周数1~104]
 /课表 调课 课次编号 YYYY-MM-DD HH:MM HH:MM [新教室]
 /课表 停课 课次编号
@@ -43,7 +45,7 @@ HELP = """个人课表（所有指令只操作你在本群的课表）
 /课表 删课 课程编号  —— 停用整门课程
 /课表 恢复 课程编号  —— 撤销该课程所有本地修改与停课
 /课表 提醒 开|关   /课表 时区 Asia/Shanghai
-/课表 课程   /课表 状态   /课表 清空 确认
+/课表 课程 [科目关键词]   /课表 状态   /课表 清空 确认
 课程编号/课次编号见查询结果；名称含空格时请用双引号包围。
 调课只影响一个课次。换教室但时间不变时，调课填原日期和时间。"""
 
@@ -172,6 +174,9 @@ class TimetablePlugin(MaiBotPlugin):
         description=("查询当前群聊中提问者自己的真实课程表。用户问‘明天有什么课’、‘今天下午上什么课’、"
                      "‘这周的课表’、‘下周一英语在哪上’、‘下一节课在哪’、‘明天有早八吗’、"
                      "‘这周哪几天没早八’、‘下一次早八是什么课’时必须调用此工具读取课表，"
+                     "科目支持模糊查询：高数、大英、线代等简称、部分缩写和轻微错字交给插件匹配，"
+                     "subject 保留用户原词，不要先猜测全称。只问某门课什么时候上且未给日期时，period填未来31天；"
+                     "根据 subject_matching 的真实课程名回答，多门候选不能任意选一门。"
                      "不要从聊天记忆猜测。只读查询，不会修改课程。用户要求调整已有课表时，也先用此工具确定"
                      "真实课次，再调用 manage_timetable；有多个匹配课次时先询问，不要擅自任选或批量修改。日期由插件按成员时区解析。"
                      "早八按08:00（含）至09:00（不含）开始的课统计：time_of_day填早八，"
@@ -184,11 +189,11 @@ class TimetablePlugin(MaiBotPlugin):
             "message_id": {"type": "string", "description": "本次提出课表问题的用户消息 msg_id。"
                            "如用户问‘明天有什么课’，填写该条提问消息的编号；不能填用户QQ号、文件编号或猜测编号。",
                            "required": True},
-            "period": {"type": "string", "description": "今天、明天、后天、本周、下周、未来7天、下一节、下一次早八、"
+            "period": {"type": "string", "description": "今天、明天、后天、本周、下周、未来7天、未来31天、下一节、下一次早八、"
                        "本周三、下周一或具体日期 YYYY-MM-DD。直接保留用户的相对日期。", "default": "明天"},
             "days": {"type": "integer", "description": "仅具体日期时使用，查询连续几天，1~31。", "default": 1,
                      "minimum": 1, "maximum": 31},
-            "subject": {"type": "string", "description": "可选科目关键词，如英语；未指定则留空。", "default": ""},
+            "subject": {"type": "string", "description": "可选科目原词，支持高数/大英/线代等简称、关键词及受限模糊匹配；不要自行改写全称，未指定留空。", "default": ""},
             "time_of_day": {"type": "string", "enum": ["全天", "上午", "下午", "晚上", "早八"],
                             "description": "查询时段。问早八填早八（08:00含至09:00不含开始的课）；默认全天。", "default": "全天"},
         },
@@ -233,7 +238,7 @@ class TimetablePlugin(MaiBotPlugin):
             "date": {"type": "string", "description": "加课必填、调课可选的目标日期：今天、明天、后天、下周一或YYYY-MM-DD，必须是单天。", "default": ""},
             "start_time": {"type": "string", "description": "目标上课时间HH:MM；加课必填，调课可选。", "default": ""},
             "end_time": {"type": "string", "description": "目标下课时间HH:MM；加课必填，调课未填保留原时长。", "default": ""},
-            "subject": {"type": "string", "description": "加课的科目、改课的新名称，或课程列表筛选关键词；调课/停课不用此字段筛选。", "default": ""},
+            "subject": {"type": "string", "description": "加课的科目、改课的新名称，或课程列表模糊筛选关键词（支持简称）；调课/停课不用此字段筛选。", "default": ""},
             "classroom": {"type": "string", "description": "教室；调课/改课留空表示保留原教室，加课留空表示未填写。", "default": ""},
             "weeks": {"type": "integer", "description": "仅加课可用：从目标日每周一次，共1~104次；默认只加一次。", "minimum": 1, "maximum": 104, "default": 1},
         },
@@ -445,9 +450,30 @@ class TimetablePlugin(MaiBotPlugin):
         if action == "解析" and len(values) <= 1:
             count, skipped = self.store.import_latest(owner, values[0] if values else "合并")
             return f"已解析 {count} 门课程，跳过 {skipped} 个全天事项。"
-        if action == "课程" and not values:
-            courses = self.store.course_list(owner)
-            return "\n".join(courses) if courses else "还没有导入课程。"
+        if action == "课程" and len(values) <= 1:
+            courses = self.store.course_list(owner, values[0] if values else "")
+            return "\n".join(courses) if courses else ("没有匹配的课程。" if values else "还没有导入课程。")
+        if action == "搜索" and 1 <= len(values) <= 3:
+            if not values[0].strip():
+                raise ValueError("搜索需要填写科目关键词")
+            period = values[1] if len(values) > 1 else "未来31天"
+            try:
+                days = int(values[2]) if len(values) == 3 else 1
+            except ValueError:
+                raise ValueError("搜索天数应为1~31的整数") from None
+            found = query_schedule(self.store, owner, period, days, values[0], "全天", now)
+            if not found["lessons"]:
+                return f"{found['range_start'][:10]} 起的查询范围内没有匹配“{values[0]}”的课程。"
+            names = found["subject_matching"]["matched_subjects"]
+            lines = [f"课表搜索 · {zone} · 科目关键词：{values[0]}",
+                     "匹配科目：" + "、".join(x["subject"] for x in names)]
+            for lesson in found["lessons"][:60]:
+                start, end = datetime.fromisoformat(lesson["start"]), datetime.fromisoformat(lesson["end"])
+                lines.append(f"{start:%m-%d %H:%M}–{end:%H:%M} {lesson['subject']} "
+                             f"｜{lesson['classroom'] or '教室未填写'}\n课次 {lesson['lesson_id']}")
+            if found["total"] > 60:
+                lines.append(f"还有 {found['total'] - 60} 节，请缩小日期范围。")
+            return "\n".join(lines)
         if action in {"今天", "明天", "本周", "下周", "查询"}:
             lower = datetime.combine(now.date(), time(), ZoneInfo(zone))
             days = 1

@@ -14,6 +14,7 @@ import re
 from .calendar_engine import Lesson, parse_calendar, stamp
 from .query import date_window, model_visible_content
 from .store import Store
+from .matching import subject_matches
 
 
 def lesson_data(lesson: Lesson) -> dict[str, Any]:
@@ -84,7 +85,9 @@ def manage_schedule(store: Store, owner: str, action: str, *, message_id: str, l
     if action == "课程列表":
         courses = store.course_details(owner)
         if subject:
-            courses = [x for x in courses if subject.casefold() in x["subject"].casefold()]
+            names, matching = subject_matches(subject, (x["subject"] for x in courses))
+            courses = [x for x in courses if x["subject"] in names]
+            result["subject_matching"] = matching
         result.update(courses=courses[:100], total=len(courses), truncated=len(courses) > 100,
                       content="这是当前成员的课程列表，包含停用课程。只按用户明确要求维护，不能猜测课程编号。")
     elif action == "加课":

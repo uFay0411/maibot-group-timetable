@@ -11,6 +11,7 @@ import json
 import sqlite3
 
 from .calendar_engine import Lesson, apply_change, expand, parse_calendar
+from .matching import match_subjects
 
 
 class Store:
@@ -168,9 +169,13 @@ class Store:
             db.execute("UPDATE courses SET patch='{}' WHERE owner=? AND id=?", (owner, cid))
             db.execute("DELETE FROM changes WHERE owner=? AND id=?", (owner, cid))
 
-    def course_list(self, owner: str) -> List[str]:
+    def course_list(self, owner: str, subject: str = "") -> List[str]:
+        courses = self.course_details(owner)
+        if subject.strip():
+            names = {x["subject"] for x in match_subjects(subject, (x["subject"] for x in courses))}
+            courses = [x for x in courses if x["subject"] in names]
         return [f"{x['course_id']} {x['subject']} {'[已停用]' if x['deleted'] else ''}"
-                for x in self.course_details(owner)]
+                for x in courses]
 
     def course_details(self, owner: str) -> List[dict]:
         with self.connect() as db:

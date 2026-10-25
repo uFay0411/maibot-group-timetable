@@ -9,9 +9,11 @@ import json
 
 FILES = (
     ".gitignore", "__init__.py", "_manifest.json", "calendar_engine.py", "files.py", "imports.py",
-    "plugin.py", "query.py", "management.py", "store.py", "pyproject.toml", "requirements.txt", "README.md", "CHANGELOG.md",
+    "plugin.py", "query.py", "management.py", "wakeup.py", "_wakeup_protocol.py", "store.py",
+    "pyproject.toml", "requirements.txt", "README.md", "CHANGELOG.md",
     "LICENSE", "config.default.toml", "examples/demo.ics", "tests/conftest.py", "tests/test_timetable.py",
-    "tests/test_query.py", "tests/test_imports.py", "tests/test_management.py", "scripts/build_release.py",
+    "tests/test_query.py", "tests/test_imports.py", "tests/test_management.py", "tests/test_wakeup.py",
+    "licenses/WakeUpDecoder-APACHE-2.0.txt", "THIRD_PARTY_NOTICES.md", "scripts/build_release.py",
 )
 
 

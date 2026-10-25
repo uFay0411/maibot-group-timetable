@@ -22,9 +22,10 @@ from .files import read_upload
 from .imports import (
     call_snowluma_api, ics_files, own_text, quoted_message_id, safe_api_error, snowluma_source, snowluma_summary,
 )
-from .query import query_schedule
+from .query import model_visible_content, query_schedule
 from .management import add_course, manage_schedule
 from .store import Store
+from .wakeup import fetch_schedule as fetch_wakeup_schedule, to_ics as wakeup_to_ics
 
 HELP = """个人课表（所有指令只操作你在本群的课表）
 也可以直接问：明天有什么课？这周有哪些课？下一节课在哪？
@@ -33,6 +34,7 @@ HELP = """个人课表（所有指令只操作你在本群的课表）
 上传 .ics 自动合并；关闭自动导入时，上传后用 /课表 解析。
 也可以引用自己上传的 ICS 文件消息，再发送 /课表 解析。
 /课表 解析 [合并|替换]  —— 替换会移除旧课程与本地调课
+/课表 wakeup [合并|替换] 分享口令或完整分享文案
 /课表 今天 | 明天 | 本周 | 下周 | 查询 YYYY-MM-DD [天数1~31]
 /课表 加课 YYYY-MM-DD HH:MM HH:MM 科目 教室 [周数1~104]
 /课表 调课 课次编号 YYYY-MM-DD HH:MM HH:MM [新教室]
@@ -263,6 +265,52 @@ class TimetablePlugin(MaiBotPlugin):
         except (ValueError, ZoneInfoNotFoundError) as exc:
             return {"success": False, "content": str(exc), "error": str(exc)}
 
+    async def import_wakeup_data(self, owner: str, text: str, mode: str) -> dict:
+        if mode not in {"合并", "替换"}:
+            raise ValueError("WakeUp 导入模式为 合并 或 替换")
+        member = await asyncio.to_thread(self.store.get_member, owner)
+        try:
+            parts = await asyncio.wait_for(fetch_wakeup_schedule(text), timeout=35)
+        except asyncio.TimeoutError:
+            raise ValueError("WakeUp 请求超时，请稍后重试，未修改课表") from None
+        raw = await asyncio.to_thread(wakeup_to_ics, parts, member["zone"])
+        count, _ = await asyncio.to_thread(self.store.import_ics, owner, raw, mode, upload_name="wakeup.ics")
+        result = {"success": True, "source": "WakeUp", "mode": mode, "imported_arrangements": count,
+                  "timezone": member["zone"], "content": "WakeUp 课表已实际导入，imported_arrangements 是课程安排数量，"
+                  "同一科目不同时间可有多条安排。合并保留其他课程与本地调整；替换清除旧课程和本地调整。"
+                  "可以继续查询、调课和课前提醒。请通过 reply 自然说明结果，不能复述分享口令。"}
+        result["content"] = model_visible_content(result)
+        return result
+
+    @Tool(
+        "import_wakeup_timetable",
+        description=("用户提供 WakeUp课程表分享口令/完整分享文案并明确要求导入时，调用此工具导入到该用户在当前群的"
+                     "个人课表。message_id 必须取本次用户消息的 msg_id；工具只从这条真实消息读取口令，不能借用其他人"
+                     "或历史消息里的口令。默认合并，只有用户明确要求替换整张旧课表时才填替换。"
+                     "口令通常30分钟有效，过期需用户重新生成。不能编造课表内容或在回复中复述口令。"
+                     "依据 success 和 imported_arrangements 通过 reply 自然说明导入结果。"),
+        parameters={
+            "message_id": {"type": "string", "description": "本次明确要求导入、并包含 WakeUp 分享口令的用户消息 msg_id。", "required": True},
+            "mode": {"type": "string", "enum": ["合并", "替换"], "default": "合并",
+                     "description": "默认合并；替换会清除旧课程和全部本地修改，只在用户明确要求替换时使用。"},
+        }, visibility="visible",
+    )
+    async def import_wakeup_timetable(self, message_id="", mode="合并", **context):
+        if not self.config.plugin.enabled:
+            return {"success": False, "content": "课表插件已关闭，未导入课表。"}
+        try:
+            if not isinstance(message_id, str) or not message_id.strip():
+                raise ValueError("导入口令必须提供本次用户消息的 message_id")
+            owner, stream = await self.query_owner(message_id, context)
+            source = await self.ctx.message.get_by_id(message_id, stream_id=stream, include_binary_data=False)
+            if not isinstance(source, dict) or str(source.get("message_id")) != message_id or identity(source)[:2] != (owner, stream):
+                raise ValueError("无法确认本次口令消息归属，未导入课表")
+            async with self.locks[owner]:
+                await self.register_member(source)
+                return await self.import_wakeup_data(owner, own_text(source), mode)
+        except (ValueError, ZoneInfoNotFoundError) as exc:
+            return {"success": False, "content": str(exc), "error": str(exc)}
+
     @HookHandler("chat.receive.before_process", name="receive_ics", mode=HookMode.OBSERVE, timeout_ms=45000)
     async def receive_ics(self, message=None, **kwargs):
         if not self.config.plugin.enabled or not isinstance(message, dict):
@@ -355,11 +403,29 @@ class TimetablePlugin(MaiBotPlugin):
         try:
             owner, stream = await self.register_member(message)
             async with self.locks[owner]:
-                args = shlex.split(command_text.removeprefix("/课表").strip())
-                if args and args[0] == "解析" and len(args) <= 2 and quoted_message_id(message):
-                    result = await self.import_quoted(message, owner, args[1] if len(args) == 2 else "合并")
+                body = command_text.removeprefix("/课表").strip()
+                # 完整分享文案可能有引号、换行；不经过 shlex，避免把文案误作多个指令参数。
+                wakeup = re.match(r"^(?:wakeup|口令|导入口令)(?:\s+([\s\S]*))?$", body, flags=re.IGNORECASE)
+                if wakeup:
+                    rest = (wakeup.group(1) or "").strip()
+                    mode_match = re.match(r"^(合并|替换)(?:\s+|$)", rest)
+                    mode = mode_match.group(1) if mode_match else "合并"
+                    if mode_match:
+                        rest = rest[mode_match.end():]
+                    trailing_mode = re.search(r"\s+(合并|替换)$", rest)
+                    if trailing_mode:
+                        if mode_match and trailing_mode.group(1) != mode:
+                            raise ValueError("导入模式不能同时指定合并和替换")
+                        mode = trailing_mode.group(1)
+                        rest = rest[:trailing_mode.start()]
+                    imported = await self.import_wakeup_data(owner, rest, mode)
+                    result = f"已从 WakeUp {mode}导入 {imported['imported_arrangements']} 条课程安排，可查询并自动提醒。"
                 else:
-                    result = await asyncio.to_thread(self.execute, owner, args)
+                    args = shlex.split(body)
+                    if args and args[0] == "解析" and len(args) <= 2 and quoted_message_id(message):
+                        result = await self.import_quoted(message, owner, args[1] if len(args) == 2 else "合并")
+                    else:
+                        result = await asyncio.to_thread(self.execute, owner, args)
         except (ValueError, ZoneInfoNotFoundError) as exc:
             result = f"课表：{exc}"
         except Exception:

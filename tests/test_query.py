@@ -175,3 +175,81 @@ async def test_question_lookup_permission_error_is_preserved(natural_tool):
     p.ctx.message.get_by_id.return_value = {"success": False, "error": "message.get_by_id permission denied"}
     result = await p.query_timetable(message_id="question-123", **context)
     assert result["success"] is False and "permission denied" in result["error"]
+
+
+@pytest.mark.parametrize("start,end,is_early", [("075900", "090000", False), ("080000", "094000", True),
+                                               ("083000", "100000", True), ("085900", "103000", True),
+                                               ("090000", "104000", False)])
+def test_early_class_start_time_boundaries(store, start, end, is_early):
+    store.import_ics("alice", ics(start="20261026T" + start, end="20261026T" + end), "合并")
+    result = query_schedule(store, "alice", "明天", 1, "", "早八", dt("2026-10-25"))
+    assert result["has_early_class"] is is_early
+    assert result["total"] == int(is_early)
+    assert result["daily_summary"][0]["has_early_class"] is is_early
+    if is_early:
+        assert result["lessons"][0]["start"][11:19] == f"{start[:2]}:{start[2:4]}:{start[4:]}"
+
+
+def test_week_early_class_summary_includes_days_without_early_classes(store):
+    store.import_ics("alice", ics(), "合并")
+    store.import_ics("alice", ics(uid="wednesday", start="20261028T083000", end="20261028T101000"), "合并")
+    store.import_ics("alice", ics(uid="tuesday", start="20261027T090000", end="20261027T104000"), "合并")
+    result = query_schedule(store, "alice", "下周", 1, "", "早八", dt("2026-10-25"))
+    summary = result["daily_summary"]
+    assert len(summary) == 7
+    assert [(x["date"], x["weekday"]) for x in summary if x["has_early_class"]] == [
+        ("2026-10-26", "周一"), ("2026-10-28", "周三")]
+    assert not summary[1]["has_early_class"]  # 周二有九点的课，仍属于没有早八。
+    assert sum(not x["has_early_class"] for x in summary) == 5
+
+
+def test_early_class_query_applies_member_timezone(store):
+    store.import_ics("alice", ics(tz="", start="20261026T000000Z", end="20261026T014000Z"), "合并")
+    result = query_schedule(store, "alice", "明天", 1, "", "早八", dt("2026-10-25"))
+    assert result["has_early_class"] is True
+    assert result["lessons"][0]["start"].endswith("08:00:00+08:00")
+
+
+def test_next_early_class_searches_beyond_one_week_and_skips_cancelled_lesson(store):
+    store.import_ics("alice", ics("RRULE:FREQ=WEEKLY;COUNT=3\r\nEXDATE;TZID=Asia/Shanghai:20261102T080000\r\n"), "合并")
+    first = store.lessons("alice", dt(clock="00:00"), dt("2026-10-27", "00:00"))[0]
+    store.change("alice", first, {"cancelled": True})
+    result = query_schedule(store, "alice", "下一次早八", 1, "", "全天", dt("2026-10-25"))
+    assert result["time_of_day"] == "早八" and result["has_early_class"] is True
+    assert result["lessons"][0]["start"].startswith("2026-11-09T08:00")
+
+
+def test_early_class_reschedule_removes_original_day_and_keeps_new_day(store):
+    store.import_ics("alice", ics(), "合并")
+    lesson = store.lessons("alice", dt(clock="00:00"), dt("2026-10-27", "00:00"))[0]
+    store.change("alice", lesson, {"start": dt("2026-10-27", "08:30").isoformat(),
+                                    "end": dt("2026-10-27", "10:10").isoformat()})
+    result = query_schedule(store, "alice", "下周", 1, "", "早八", dt("2026-10-25"))
+    assert not result["daily_summary"][0]["has_early_class"]
+    assert result["daily_summary"][1]["has_early_class"]
+    assert result["lessons"][0]["start"].startswith("2026-10-27T08:30")
+
+
+def test_next_early_class_does_not_return_started_or_outside_window_classes(store):
+    store.import_ics("alice", ics(), "合并")
+    store.import_ics("alice", ics(uid="far-away", start="20261201T080000", end="20261201T094000"), "合并")
+    result = query_schedule(store, "alice", "下次早八", 1, "", "早八", dt(clock="10:00"))
+    assert result["total"] == 0 and result["has_early_class"] is False
+    assert "31天" in result["content"]
+
+
+async def test_natural_early_class_tool_uses_question_author(natural_tool):
+    p, context, _ = natural_tool
+    context.pop("user_id")
+    p.ctx.message.get_by_id.return_value = question_message()
+    result = await p.query_timetable(message_id="question-123", period="明天", time_of_day="早八", **context)
+    assert result["success"] and result["has_early_class"] is True
+    assert result["lessons"][0]["subject"] == "高等数学"
+    assert not p.ctx.send.text.called
+
+
+def test_early_class_tool_schema_and_description():
+    from timetable_test_plugin import TimetablePlugin
+    info = next(x for x in TimetablePlugin().get_components() if x["name"] == "query_timetable")["metadata"]
+    assert "早八" in info["parameters_raw"]["time_of_day"]["enum"]
+    assert "下一次早八" in info["description"]

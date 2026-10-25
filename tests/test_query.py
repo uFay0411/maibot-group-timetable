@@ -253,3 +253,58 @@ def test_early_class_tool_schema_and_description():
     info = next(x for x in TimetablePlugin().get_components() if x["name"] == "query_timetable")["metadata"]
     assert "早八" in info["parameters_raw"]["time_of_day"]["enum"]
     assert "下一次早八" in info["description"]
+
+
+def visible_query_data(result):
+    # MaiBot 优先使用 content；只检查模型实际收到的字段，不能依赖旁路 lessons 掩盖问题。
+    header, body = result["content"].split("\n", 1)
+    assert "实际查询结果" in header
+    data, _ = json.JSONDecoder().raw_decode(body)
+    return data
+
+
+async def test_model_visible_tool_content_contains_actual_lessons(natural_tool):
+    p, context, _ = natural_tool
+    result = await p.query_timetable(period="明天", **context)
+    data = visible_query_data(result)
+    assert data["success"] and data["total"] == 1
+    assert data["timezone"] == "Asia/Shanghai"
+    assert data["lessons"][0]["subject"] == "高等数学"
+    assert data["lessons"][0]["classroom"] == "教一101"
+    assert data["lessons"][0]["start"] == "2026-10-26T08:00:00+08:00"
+    assert data["lessons"][0]["end"] == "2026-10-26T09:40:00+08:00"
+    assert "content" not in data  # 不递归嵌入自己。
+
+
+def test_model_visible_early_class_content_contains_daily_availability(store):
+    store.import_ics("alice", ics(), "合并")
+    result = query_schedule(store, "alice", "下周", 1, "", "早八", dt("2026-10-25"))
+    data = visible_query_data(result)
+    assert data["has_early_class"]
+    assert data["daily_summary"][0]["date"] == "2026-10-26"
+    assert data["daily_summary"][0]["has_early_class"] is True
+    assert data["daily_summary"][1]["has_early_class"] is False
+    assert data["lessons"][0]["classroom"] == "教一101"
+
+
+def test_model_visible_empty_query_is_successful_empty_data(store):
+    result = query_schedule(store, "alice", "明天", 1, "", "全天", dt("2026-10-25"))
+    data = visible_query_data(result)
+    assert data["success"] is True and data["total"] == 0 and data["lessons"] == []
+    assert data["range_start"] == "2026-10-26T00:00:00+08:00"
+    assert "没有符合条件" in result["content"]
+
+
+def test_model_visible_next_early_query_contains_honest_search_window(store):
+    result = query_schedule(store, "alice", "下一次早八", 1, "", "早八", dt("2026-10-25"))
+    data = visible_query_data(result)
+    assert data["has_early_class"] is False and data["total"] == 0
+    assert "31天" in result["content"] and "以后都没有" in result["content"]
+
+
+def test_course_text_remains_json_data_in_visible_content(store):
+    title = '英语 "A班"\n周一'
+    store.import_ics("alice", ics(summary=title.replace("\n", "\\n")), "合并")
+    result = query_schedule(store, "alice", "明天", 1, "", "全天", dt("2026-10-25"))
+    data = visible_query_data(result)
+    assert data["lessons"][0]["subject"] == title

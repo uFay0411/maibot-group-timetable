@@ -99,11 +99,11 @@ class Store:
     def reminder_mode(self,platform: str,user: str) -> str:
         with self.connect() as db:
             row=db.execute("SELECT reminder_mode FROM personal_settings WHERE platform=? AND user=?",(platform,user)).fetchone()
-        return row[0] if row else 'group'
+        return ('off' if row[0]=='private' else row[0]) if row else 'group'
 
     def set_reminder_mode(self,platform: str,user: str,mode: str):
-        if mode not in {'group','private','off'}:
-            raise ValueError('提醒方式必须为群聊、私聊或关闭')
+        if mode not in {'group','off'}:
+            raise ValueError('提醒方式必须为群聊或关闭；私聊提醒已移除')
         with self.connect() as db:
             db.execute("INSERT INTO personal_settings VALUES(?,?,?) ON CONFLICT(platform,user) DO UPDATE SET reminder_mode=excluded.reminder_mode",(platform,user,mode))
 

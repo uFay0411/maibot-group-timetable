@@ -16,7 +16,6 @@ import pytest
 from timetable_test_plugin.calendar_engine import stamp
 from timetable_test_plugin.group_access import require_admin
 from timetable_test_plugin.group_current import group_current, format_group_current
-from timetable_test_plugin.personal import temporary_permission
 from timetable_test_plugin.presentation import render_group_current
 from timetable_test_plugin.store import Store
 
@@ -243,30 +242,15 @@ async def test_room_conflict_is_merged_and_never_silently_selected(personal):
     assert result["total"] == 1 and "来源教室冲突" in result["lessons"][0]["classroom"]
 
 
-async def test_default_group_mode_and_private_mode_deduplicate_across_restart(personal):
-    p, ctx, _, _, private, _, _, _ = personal
-    await p.tick(dt(clock="07:40"))
-    assert p.ctx.send.hybrid.await_count == 1
-    p.ctx.send.hybrid.reset_mock()
-    enabled = await p.personal_timetable(message_id="question-123", action="私聊提醒", reminder_mode="private", **ctx)
-    assert enabled["success"]
-    p.store = Store(p.store.path)
-    await p.tick(dt(clock="07:41"))
-    assert not p.ctx.send.hybrid.called
-    assert not p.store.delivery_status(private)
-
-
-async def test_private_reminder_sends_once_without_at_and_uses_reply(personal):
-    p, _, _, _, private, _, _, _ = personal
-    p.store.set_reminder_mode("qq", "100", "private")
+async def test_group_reminders_deduplicate_across_restart(personal):
+    p, _, _, _, _, _, _, _ = personal
     await asyncio.gather(p.tick(dt(clock="07:40")), p.tick(dt(clock="07:40")))
-    assert p.ctx.send.hybrid.await_count == 1 and p.ctx.maisaka.reply.generate.await_count == 1
-    segments, stream = p.ctx.send.hybrid.call_args.args
-    assert stream == "private-stream" and all(s["type"] != "at" for s in segments)
-    assert p.ctx.maisaka.reply.generate.call_args.args[0] == "private-stream"
+    assert p.ctx.send.hybrid.await_count == 1
+    assert p.ctx.send.hybrid.call_args.args[1] in {"group-stream", "second-stream"}
+    p.ctx.chat.open_session.assert_not_awaited()
     p.store = Store(p.store.path)
     await p.tick(dt(clock="07:41"))
-    assert p.ctx.send.hybrid.await_count == 1 and p.store.delivery_status(private) == {"sent": 1}
+    assert p.ctx.send.hybrid.await_count == 1
 
 
 async def test_old_delivery_from_one_group_prevents_new_global_reminder(personal):
@@ -279,49 +263,12 @@ async def test_old_delivery_from_one_group_prevents_new_global_reminder(personal
     assert not p.ctx.send.hybrid.called
 
 
-@pytest.mark.parametrize("flag", [False, None, "true"])
-async def test_nonfriend_unknown_or_closed_temporary_session_never_forced(personal, flag):
-    p, ctx, _, _, _, _, _, settings = personal
-    settings["friends"] = []
-    settings["temporary"] = flag
-    result = await p.personal_timetable(message_id="question-123", action="私聊提醒", reminder_mode="private", **ctx)
-    assert not result["success"] and p.store.reminder_mode("qq", "100") == "group"
-    assert not p.ctx.chat.open_session.called and not settings["sent"]
-
-
-async def test_allowed_temporary_session_keeps_source_group_and_dedup(personal):
-    p, _, _, _, private, _, _, settings = personal
-    settings.update(friends=[], temporary=True)
-    p.store.set_reminder_mode("qq", "100", "private")
-    await p.tick(dt(clock="07:40"))
-    assert len(settings["sent"]) == 1 and settings["sent"][0]["group_id"] in {123, 456}
-    assert settings["sent"][0]["user_id"] == 100 and not p.ctx.send.hybrid.called
-    p.ctx.maisaka.context.append.assert_awaited_once()
-    assert p.store.delivery_status(private) == {"sent": 1}
-    await p.tick(dt(clock="07:41"))
-    assert len(settings["sent"]) == 1
-
-
-async def test_temporary_permission_closed_during_generation_blocks_send(personal):
-    p, _, _, _, private, _, _, settings = personal
-    settings.update(friends=[], temporary=True)
-    p.store.set_reminder_mode("qq", "100", "private")
-
-    async def generate(*args, **kwargs):
-        settings["temporary"] = False
-        return {"success": True, "text": "高等数学 08:00 教一101 准备上课"}
-
-    p.ctx.maisaka.reply.generate.side_effect = generate
-    await p.tick(dt(clock="07:40"))
-    assert not settings["sent"] and not p.ctx.send.hybrid.called and not p.store.delivery_status(private)
-
-
-async def test_unknown_send_never_replayed_in_another_mode(personal):
-    p, _, _, _, private, _, _, _ = personal
-    p.store.set_reminder_mode("qq", "100", "private")
+async def test_unknown_group_send_is_not_replayed_after_preference_changes(personal):
+    p, _, actor, _, _, _, _, _ = personal
     p.ctx.send.hybrid.side_effect = TimeoutError("unknown result")
     await p.tick(dt(clock="07:40"))
-    assert p.store.delivery_status(private) == {"pending": 1}
+    assert p.store.delivery_status(actor) == {"pending": 1}
+    p.store.set_reminder_mode("qq", "100", "off")
     p.store.set_reminder_mode("qq", "100", "group")
     await p.tick(dt(clock="07:41"))
     assert p.ctx.send.hybrid.await_count == 1
@@ -343,15 +290,6 @@ async def test_no_due_courses_do_not_poll_qq_permissions(personal):
     p.ctx.api.call.reset_mock()
     await p.tick(dt(clock="07:00"))
     assert not p.ctx.api.call.called and not p.ctx.send.hybrid.called
-
-
-async def test_reply_or_host_policy_refusal_never_sends_temporary_message(personal):
-    p, _, _, _, private, _, _, settings = personal
-    settings.update(friends=[], temporary=True)
-    p.store.set_reminder_mode("qq", "100", "private")
-    p.ctx.maisaka.reply.generate.return_value = {"success": False, "error": "adapter_policy_denied"}
-    await p.tick(dt(clock="07:40"))
-    assert not settings["sent"] and not p.store.delivery_status(private)
 
 
 def test_private_quoted_file_requires_same_sender_and_private_message():
@@ -379,14 +317,6 @@ def test_private_quoted_file_requires_same_sender_and_private_message():
     detail["group_id"] = 123
     with pytest.raises(ValueError):
         snowluma_source(detail, current, "666")
-
-
-async def test_route_identity_mismatch_never_sends(personal):
-    p, _, _, _, private, _, _, _ = personal
-    p.store.set_reminder_mode("qq", "100", "private")
-    p.ctx.chat.open_session.return_value["user_id"] = "200"
-    await p.tick(dt(clock="07:40"))
-    assert not p.ctx.send.hybrid.called and not p.store.delivery_status(private)
 
 
 def test_group_current_fallback_next_labels_and_excludes_unregistered(store, monkeypatch):
@@ -429,15 +359,39 @@ def test_group_current_fallback_next_labels_and_excludes_unregistered(store, mon
         assert img.width == 1080
 
 
-@pytest.mark.parametrize(
-    "value",
-    [
-        {"group_id": 123},
-        {"group_id": 123, "allow_member_temporary_session": False},
-        {"group_id": 123, "allow_member_temporary_session": True},
-    ],
-)
-def test_temporary_switch_requires_actual_identity_and_explicit_flag(value):
-    assert temporary_permission(value, "123") == value.get("allow_member_temporary_session")
+async def test_removed_private_reminder_cannot_be_enabled_by_tool_or_command(personal):
+    p, ctx, _, _, _, _, source, _ = personal
+    result = await p.personal_timetable(message_id="question-123", action="私聊提醒", reminder_mode="private", **ctx)
+    assert not result["success"] and "已移除" in result["content"]
     with pytest.raises(ValueError):
-        temporary_permission(value, "999")
+        p.store.set_reminder_mode("qq", "100", "private")
+    source["raw_message"] = [{"type": "text", "data": "/课表 私聊提醒 开"}]
+    await p.command(message=source)
+    assert "已移除" in p.ctx.send.text.call_args.args[0]
+    assert not p.ctx.chat.open_session.called and not p.ctx.send.hybrid.called
+
+
+async def test_legacy_private_preference_is_disabled_without_falling_back_to_group(personal):
+    p, _, _, _, private, _, _, _ = personal
+    with p.store.connect() as db:
+        db.execute("INSERT OR REPLACE INTO personal_settings VALUES('qq','100','private')")
+    p.store.import_ics(private, ics(uid="private-only"), "合并")
+    assert p.store.reminder_mode("qq", "100") == "off"
+    await p.tick(dt(clock="07:40"))
+    assert not p.ctx.send.hybrid.called and not p.ctx.chat.open_session.called
+    assert not p.ctx.maisaka.reply.generate.called
+    p.store.set_reminder_mode("qq", "100", "group")
+    await p.tick(dt(clock="07:41"))
+    assert p.ctx.send.hybrid.await_count == 1
+    assert p.ctx.send.hybrid.call_args.args[1] != "private-stream"
+
+
+def test_manifest_and_tool_schema_no_longer_offer_private_reminders():
+    from timetable_test_plugin import TimetablePlugin
+
+    root = __import__("pathlib").Path(__file__).parents[1]
+    manifest = json.loads((root / "_manifest.json").read_text(encoding="utf-8"))
+    assert not {"chat.open_session", "chat.get_all_streams", "maisaka.context.append"} & set(manifest["capabilities"])
+    tool = next(x for x in TimetablePlugin().get_components() if x["name"] == "personal_timetable")
+    params = tool["metadata"]["parameters_raw"]
+    assert "私聊提醒" not in params["action"]["enum"] and "private" not in params["reminder_mode"]["enum"]

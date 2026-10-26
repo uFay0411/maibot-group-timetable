@@ -34,12 +34,12 @@ from .group_upcoming import format_group_upcoming, group_upcoming as collect_gro
 from .batch import apply_batch, cancel_batch, format_preview, prepare_batch, read_draft
 from .recognition import recognize
 from .reminders import remind_user
-from .personal import MergedView, accessible_members, parts as owner_parts_any, private_route
+from .personal import MergedView, accessible_members, parts as owner_parts_any
 from .presentation import command_query, format_query, render_group_current, render_timetable
 from .wakeup import fetch_schedule as fetch_wakeup_schedule, to_ics as wakeup_to_ics
 
 HELP = """个人课表（群聊按群隔离；私聊可管理个人/已选来源课表）
-/课表 私聊提醒 开|关   /课表 提醒方式 私聊|群聊|关闭
+/课表 提醒方式 群聊|关闭
 /课表 来源 [群号|个人|合并] [QQ号，MaiBot管理员代管]
 /课表 合并查询 [明天|日期] [天数] [图片] —— 本人的多群实时合并去重
 也可以直接问：明天有什么课？这周有哪些课？下一节课在哪？
@@ -131,7 +131,7 @@ class TimetablePlugin(MaiBotPlugin):
         self.task = None
         self.selection_contexts = {}
         self.image_receipts = {}
-        self.private_errors = {}
+        self.reminder_errors = {}
 
     def tool_error(self, exc):
         result = {"success": False, "content": str(exc), "error": str(exc)}
@@ -464,25 +464,22 @@ class TimetablePlugin(MaiBotPlugin):
         return view
 
     async def personal_action(self,actor: str,stream: str,action: str,source_group: str='',target_user: str='',
-                              reminder_mode: str='private',period: str='未来7天',days: int=7,output_format: str='text'):
+                              reminder_mode: str='group',period: str='未来7天',days: int=7,output_format: str='text'):
         platform,group,uid=owner_parts_any(actor)
         if any(not isinstance(x,str) or len(x)>512 for x in (action,source_group,target_user,reminder_mode,output_format)):
             raise ValueError("个人课表参数必须为不超过512字的文本")
         if target_user and action!="切换来源":
             raise ValueError("目标用户只用于切换来源，提醒和合并查询仅作用于本人")
         if action=='私聊提醒':
-            if reminder_mode not in {'private','group','off'}:
-                raise ValueError('提醒方式为private/group/off')
-            members=await accessible_members(self.ctx,self.store,platform,uid)
-            if reminder_mode=='private':
-                await private_route(self.ctx,platform,uid,members)
+            raise ValueError('私聊提醒功能已移除；私聊课表管理和多群合并仍可使用')
+        if action=='提醒方式':
             await asyncio.to_thread(self.store.set_reminder_mode,platform,uid,reminder_mode)
-            return {'success':True,'reminder_mode':reminder_mode,'content':'已设置此用户跨群统一提醒方式；相同课次全局只提醒一次，不同时发到多个群和私聊。'}
+            return {'success':True,'reminder_mode':reminder_mode,'content':'已设置群提醒方式；相同课次跨群只提醒一次，主动私聊提醒已移除。'}
         if action=='来源':
             members=await accessible_members(self.ctx,self.store,platform,uid)
             sources=[{'source_group':owner_parts_any(x['owner'])[1] or '个人','user_id':uid} for x in members]
             return {'success':True,'sources':sources,'selected_source':await asyncio.to_thread(self.store.private_scope,actor),
-                    'reminder_mode':await asyncio.to_thread(self.store.reminder_mode,platform,uid),'last_reminder_error':self.private_errors.get('person:'+platform+':'+uid,''),'content':'这些是本人当前可访问的课表来源。私聊默认合并查询；维护默认个人课表。可用切换来源选择一个群或个人，合并切回实时合并查询。'}
+                    'reminder_mode':await asyncio.to_thread(self.store.reminder_mode,platform,uid),'last_reminder_error':self.reminder_errors.get('person:'+platform+':'+uid,''),'content':'这些是本人当前可访问的课表来源。私聊默认合并查询；维护默认个人课表。可用切换来源选择一个群或个人，合并切回实时合并查询。'}
         if action=='切换来源':
             if group:
                 raise ValueError('切换来源仅用于私聊，不改变群内课表归属')
@@ -519,15 +516,15 @@ class TimetablePlugin(MaiBotPlugin):
                 result['image_sent']=True
             result['content']=model_visible_content(result)
             return result
-        raise ValueError('个人课表操作为来源、切换来源、私聊提醒、合并查询')
+        raise ValueError('个人课表操作为来源、切换来源、提醒方式、合并查询')
 
-    @Tool('personal_timetable',visibility='visible',description='管理本人私聊和多群课表。来源列出本人可访问课表；切换来源仅限私聊，source_group为群号/个人/合并，维护默认个人课表，选群后修改该群来源。代管其他QQ号仅允许MaiBot内设置管理员，QQ群角色不授权。合并查询实时合并本人个人与多群课表并按同科目同上下课时刻去重，教室冲突如实提示，可发图片。私聊提醒设置private/group/off，跨群同课次只提醒一次；开启前检查好友或QQ临时会话开关，未知不强发。必须根据实际结果reply自然说明。',
-        parameters={'message_id':{'type':'string','required':True},'action':{'type':'string','enum':['来源','切换来源','私聊提醒','合并查询'],'required':True},
+    @Tool('personal_timetable',visibility='visible',description='管理本人私聊和多群课表。来源列出本人可访问课表；切换来源仅限私聊，source_group为群号/个人/合并，维护默认个人课表，选群后修改该群来源。代管其他QQ号仅允许MaiBot内设置管理员，QQ群角色不授权。合并查询实时合并本人个人与多群课表并按同科目同上下课时刻去重，教室冲突如实提示，可发图片。提醒方式仅支持group/off，跨群同课次只提醒一次。主动私聊提醒已移除，不得向用户承诺或尝试开启。必须根据实际结果reply自然说明。',
+        parameters={'message_id':{'type':'string','required':True},'action':{'type':'string','enum':['来源','切换来源','提醒方式','合并查询'],'required':True},
             'source_group':{'type':'string','default':''},'target_user':{'type':'string','default':''},
-            'reminder_mode':{'type':'string','enum':['private','group','off'],'default':'private'},
+            'reminder_mode':{'type':'string','enum':['group','off'],'default':'group'},
             'period':{'type':'string','default':'未来7天'},'days':{'type':'integer','minimum':1,'maximum':31,'default':7},
             'output_format':{'type':'string','enum':['text','image'],'default':'text'}})
-    async def personal_timetable(self,message_id='',action='',source_group='',target_user='',reminder_mode='private',period='未来7天',days=7,output_format='text',**context):
+    async def personal_timetable(self,message_id='',action='',source_group='',target_user='',reminder_mode='group',period='未来7天',days=7,output_format='text',**context):
         try:
             if not self.config.plugin.enabled or not message_id:
                 raise ValueError('插件已关闭或缺少真实请求消息编号')
@@ -1043,11 +1040,13 @@ class TimetablePlugin(MaiBotPlugin):
                     if len(args)>2:
                         raise ValueError('用法：/课表 来源 [群号|个人|合并] [目标QQ号，MaiBot管理员代管]')
                     found=await self.personal_action(actor,stream,'切换来源' if args else '来源',args[0] if args else '',args[1] if len(args)>1 else '')
-                elif name in {'私聊提醒','提醒方式'}:
-                    modes={'开':'private','关':'group','私聊':'private','群聊':'group','关闭':'off'}
+                elif name=='私聊提醒':
+                    raise ValueError('私聊提醒功能已移除；私聊课表管理和多群合并仍可使用')
+                elif name=='提醒方式':
+                    modes={'群聊':'group','关闭':'off'}
                     if len(args)!=1 or args[0] not in modes:
-                        raise ValueError('用法：/课表 私聊提醒 开|关，或 /课表 提醒方式 私聊|群聊|关闭')
-                    found=await self.personal_action(actor,stream,'私聊提醒',reminder_mode=modes[args[0]])
+                        raise ValueError('用法：/课表 提醒方式 群聊|关闭；私聊提醒已移除')
+                    found=await self.personal_action(actor,stream,'提醒方式',reminder_mode=modes[args[0]])
                 else:
                     image='图片' in args
                     args=[x for x in args if x!='图片']
@@ -1277,10 +1276,10 @@ class TimetablePlugin(MaiBotPlugin):
             try:
                 async with limit:
                     await remind_user(self,platform,user,now)
-                self.private_errors.pop(key,None)
+                self.reminder_errors.pop(key,None)
             except Exception as exc:
                 self.retry_after[key]=now.timestamp()+60
-                self.private_errors[key]=safe_api_error(exc)
+                self.reminder_errors[key]=safe_api_error(exc)
                 self.ctx.logger.warning('个人课表提醒未完成: %s',safe_api_error(exc))
         await asyncio.gather(*(check(m) for m in legacy),*(person(platform,user) for platform,user in people))
 

@@ -3,8 +3,8 @@
   "plugin_type": "tool",
   "id": "wu.group-timetable",
   "name": "群聊个人课表提醒",
-  "version": "1.11.0",
-  "description": "支持私聊管理和提醒、多群实时合并去重、MaiBot管理员代管、群友上课中/下一节课图片盘点及ICS/文字图片导入",
+  "version": "1.11.1",
+  "description": "支持私聊管理、多群实时合并与群提醒去重、MaiBot管理员代管、群友上课中/下一节课图片盘点及ICS/文字图片导入",
   "author": {
     "name": "Wu",
     "url": "https://github.com/uFay0411"
@@ -66,9 +66,6 @@
     "api.list",
     "llm.generate",
     "maisaka.context.resolve_image",
-    "config.get",
-    "chat.get_all_streams",
-    "chat.open_session",
-    "maisaka.context.append"
+    "config.get"
   ]
 }

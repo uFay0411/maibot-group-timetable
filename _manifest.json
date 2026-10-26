@@ -2,8 +2,8 @@
   "manifest_version": 2,
   "id": "wu.group-timetable",
   "name": "群聊个人课表提醒",
-  "version": "1.8.1",
-  "description": "支持管理员维护群成员课表、同群群友自然语言语义查询、分页图片、WakeUp与ICS导入及课前20分钟reply提醒",
+  "version": "1.9.0",
+  "description": "支持群内正在上课汇总并按下课时间排序、管理员代管、LLM群友查询、分页图片及ICS/WakeUp导入与提醒",
   "author": {"name": "Wu", "url": "https://github.com/uFay0411"},
   "license": "GPL-3.0-or-later",
   "urls": {

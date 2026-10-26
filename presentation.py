@@ -150,3 +150,62 @@ def render_timetable(result: dict, name: str) -> list[bytes]:
         y += 15
     finish()
     return pages
+
+
+def render_group_current(result: dict, name: str = "") -> list[bytes]:
+    """保留服务端的下课时间排序，不重新按上课日期/开始时间分组。"""
+    if result.get("query_type") != "group_current" or len(result.get("lessons", [])) > 50:
+        raise ValueError("请使用有效的群内当前上课查询结果生成图片")
+    if not FONT_PATH.is_file():
+        raise ValueError("课表中文字体缺失，请完整更新插件 assets 目录")
+    fonts = {size: ImageFont.truetype(str(FONT_PATH), size) for size in (22, 25, 28, 38)}
+    at = datetime.fromisoformat(result["queried_at"])
+    pages, image, draw, y = [], None, None, 0
+
+    def new_page():
+        nonlocal image, draw, y
+        image = Image.new("RGB", (1080, 2100), "#F1F5F9")
+        draw = ImageDraw.Draw(image)
+        draw.rounded_rectangle((28, 25, 1052, 215), radius=22, fill="#172B42")
+        draw.text((58, 44), "群内当前正在上课", font=fonts[38], fill="white")
+        draw.text((60, 110), f"{at:%Y-%m-%d %H:%M:%S} · {result['timezone']}", font=fonts[22], fill="#CFDFEB")
+        draw.text((60, 152), f"{result['members_in_class']}位群友 · 按下课时间从早到晚", font=fonts[25], fill="#CFDFEB")
+        draw.text((54, 236), "下课 / 开始", font=fonts[22], fill="#586D80")
+        draw.text((230, 236), "群友 / 科目", font=fonts[22], fill="#586D80")
+        draw.text((795, 236), "教室", font=fonts[22], fill="#586D80")
+        y = 279
+
+    def finish():
+        text = (f"按已建立课表统计 {result['members_with_timetable']}/{result['group_member_count']}人"
+                f" · 结果{result['page']}/{result['total_pages']}页 · 图片{len(pages)+1}")
+        draw.text((44, y + 16), text, font=fonts[22], fill="#586D80")
+        output = BytesIO()
+        image.crop((0, 0, 1080, min(2100, y + 82))).save(output, format="PNG", optimize=True)
+        pages.append(output.getvalue())
+
+    new_page()
+    for row in result["lessons"]:
+        title = row["subject"] + (" [课表时间冲突]" if row.get("conflicting_lessons") else "")
+        titles = wrapped(draw, title, fonts[28], 520)
+        rooms = wrapped(draw, row["classroom"] or "教室未填写", fonts[25], 225)
+        height = max(128, len(titles) * 42 + 58, len(rooms) * 38 + 22)
+        if y + height > 2018:
+            finish()
+            new_page()
+        draw.rounded_rectangle((34, y, 1046, y + height - 9), radius=12, fill="white")
+        start, end = datetime.fromisoformat(row["start"]), datetime.fromisoformat(row["end"])
+        draw.text((54, y + 10), end.strftime("%H:%M"), font=fonts[28], fill="#256B91")
+        draw.text((54, y + 51), end.strftime("%m-%d") if end.date() != at.date() else "下课", font=fonts[22], fill="#586D80")
+        draw.text((54, y + 84), start.strftime("%H:%M") + "开始", font=fonts[22], fill="#586D80")
+        display = wrapped(draw, f"{row['member_name']} ({row['user_id']})", fonts[22], 520, 1)[0]
+        draw.text((230, y + 8), display, font=fonts[22], fill="#586D80")
+        for index, line in enumerate(titles):
+            draw.text((230, y + 44 + index * 42), line, font=fonts[28], fill="#172B42")
+        for index, line in enumerate(rooms):
+            draw.text((795, y + 15 + index * 38), line, font=fonts[25], fill="#256B91")
+        y += height
+    if not result["lessons"]:
+        draw.text((54, y + 20), "已建立课表的群友当前没有正在上的课", font=fonts[28], fill="#586D80")
+        y += 104
+    finish()
+    return pages

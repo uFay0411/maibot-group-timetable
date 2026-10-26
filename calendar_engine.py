@@ -105,7 +105,8 @@ def parse_calendar(raw: bytes, zone: str) -> Tuple[Dict[str, str], int]:
     return result, skipped
 
 
-def expand(course_id: str, ics: str, lower: datetime, upper: datetime, zone: str) -> List[Lesson]:
+def expand(course_id: str, ics: str, lower: datetime, upper: datetime, zone: str,
+           overlapping: bool = False) -> List[Lesson]:
     calendar = Calendar.from_ical(ics)
     if all(str(e.get("STATUS", "")).upper() == "CANCELLED" for e in calendar.walk("VEVENT")):
         return []
@@ -116,7 +117,8 @@ def expand(course_id: str, ics: str, lower: datetime, upper: datetime, zone: str
             continue
         start = aware(event.decoded("DTSTART"), zone).astimezone(ZoneInfo(zone))
         end = aware(event.decoded("DTEND"), zone).astimezone(ZoneInfo(zone))
-        if not lower <= start < upper:
+        included = start < upper and end > lower if overlapping else lower <= start < upper
+        if not included:
             continue
         original = aware(event.decoded("RECURRENCE-ID", event.decoded("DTSTART")), zone)
         lessons.append(Lesson(course_id, stamp(original), str(event.get("SUMMARY", "")),

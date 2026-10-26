@@ -64,6 +64,20 @@ async def require_admin(ctx, actor_owner: str):
         raise ValueError("只有本群群主或管理员可以增删改其他成员课表；未修改任何课程")
 
 
+async def list_group_members(ctx, actor_owner: str) -> list[dict]:
+    _, group, actor = owner_parts(actor_owner)
+    rows = unpack(await call_snowluma_api(ctx, "group.get_group_member_list", group_id=int(group), no_cache=True))
+    if not isinstance(rows, list) or len(rows) > 20000:
+        raise ValueError("无法取得当前群完整成员列表，不能汇总群内课表")
+    members = {}
+    for row in rows:
+        item = checked_member(row, group)
+        members[item["user_id"]] = item
+    if actor not in members:
+        raise ValueError("无法确认提问者仍属于当前群，不能查询群内课表")
+    return list(members.values())
+
+
 async def resolve_member(ctx, actor_owner: str, stream: str, target: str) -> dict:
     if not isinstance(target, str) or len(target) > 128:
         raise ValueError("目标成员应为 @成员、QQ号或群名片，最多128字")

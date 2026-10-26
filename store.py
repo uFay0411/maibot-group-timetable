@@ -58,6 +58,20 @@ class Store:
         with self.connect() as db:
             return [dict(row) for row in db.execute("SELECT * FROM members WHERE enabled=1")]
 
+    def group_members(self, platform: str, group_id: str, stream: str) -> List[dict]:
+        # enabled 仅控制个人提醒，群内只读查询必须包含关闭提醒的成员。
+        with self.connect() as db:
+            rows = [dict(row) for row in db.execute("SELECT * FROM members WHERE stream=?", (stream,))]
+        result = []
+        for row in rows:
+            try:
+                owner = json.loads(row["owner"])
+            except (ValueError, TypeError):
+                continue
+            if isinstance(owner, list) and len(owner) == 3 and owner == [platform, group_id, row["user"]]:
+                result.append(row)
+        return result
+
     def setting(self, owner: str, field: str, value):
         if field not in {"zone", "enabled"}:
             raise ValueError("未知设置")
@@ -98,7 +112,7 @@ class Store:
                 db.execute("INSERT OR REPLACE INTO uploads VALUES (?,?,?)", (owner, upload_name, raw))
         return len(courses), skipped
 
-    def lessons(self, owner: str, lower: datetime, upper: datetime) -> List[Lesson]:
+    def lessons(self, owner: str, lower: datetime, upper: datetime, *, overlapping: bool = False) -> List[Lesson]:
         zone = self.get_member(owner)["zone"]
         with self.connect() as db:
             courses = list(db.execute("SELECT * FROM courses WHERE owner=?", (owner,)))
@@ -110,24 +124,28 @@ class Store:
             patch = json.loads(row["patch"])
             if patch.get("deleted"):
                 continue
-            for lesson in expand(cid, row["ics"], lower, upper, zone):
+            for lesson in expand(cid, row["ics"], lower, upper, zone, overlapping=overlapping):
                 change = changes.get((cid, lesson.original), {})
                 if not change.get("cancelled"):
                     changed = apply_change(apply_change(lesson, patch, zone), change, zone)
-                    if lower <= changed.start < upper:
+                    included = changed.start < upper and changed.end > lower if overlapping else lower <= changed.start < upper
+                    if included:
                         result[(cid, lesson.original)] = changed
             # 调到查询窗口里的课，即使原时间在窗口外，也必须查到。
             for (change_cid, original), change in changes.items():
                 if change_cid != cid or change.get("cancelled") or "start" not in change:
                     continue
                 moved = datetime.fromisoformat(change["start"])
-                if lower <= moved < upper:
+                if overlapping or lower <= moved < upper:
                     origin = datetime.fromisoformat(change.get("source_start", original))
                     originals = expand(cid, row["ics"], origin - timedelta(seconds=1),
                                        origin + timedelta(seconds=1), zone)
                     originals = [x for x in originals if x.original == original]
                     if originals:
-                        result[(cid, original)] = apply_change(apply_change(originals[0], patch, zone), change, zone)
+                        changed = apply_change(apply_change(originals[0], patch, zone), change, zone)
+                        included = changed.start < upper and changed.end > lower if overlapping else lower <= changed.start < upper
+                        if included:
+                            result[(cid, original)] = changed
         return sorted(result.values(), key=lambda x: (x.start, x.course_id))
 
     def select(self, owner: str, token: str) -> Lesson:

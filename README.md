@@ -122,7 +122,7 @@ config_version = "1.0.0"
 
 ![课表图片示例（全部为合成数据）](examples/timetable-preview.png)
 
-升级后在MaiBot运行环境安装更新的 `requirements.txt`（新增 `Pillow>=10,<13`，启用依赖安装的Host可自动安装），完整更新插件并重载/重启。中文字体随 `assets/` 附带，Windows/Linux无需配置系统字体。无新增权限或配置项，无需重新导入课表。
+升级后在MaiBot运行环境安装更新的 `requirements.txt`（`Pillow>=10,<14`，启用依赖安装的Host可自动安装），完整更新插件并重载/重启。1.8.1已验证Pillow13的中文字体与PNG生成兼容性，可沿用现有版本，无需降级共享环境。中文字体随 `assets/` 附带，Windows/Linux无需配置系统字体。无新增权限或配置项，无需重新导入课表。
 
 ### 自然语言查询
 

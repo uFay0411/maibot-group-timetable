@@ -33,6 +33,7 @@ def plugin(store):
     p.set_plugin_config(p.build_default_config())
     p.store = store
     p._ctx = SimpleNamespace(logger=logging.getLogger("test"),
+                             config=SimpleNamespace(get=AsyncMock(return_value=[])),
                              maisaka=SimpleNamespace(reply=SimpleNamespace(generate=AsyncMock(return_value={
                                  "success": True, "text": "高等数学要上课啦，08:00 在教一101，准备出发！"}))),
                              message=SimpleNamespace(get_by_id=AsyncMock(return_value=None)),

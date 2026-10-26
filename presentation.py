@@ -168,13 +168,13 @@ def render_group_current(result: dict, name: str = "") -> list[bytes]:
         image = Image.new("RGB", (1080, 2100), "#F1F5F9")
         draw = ImageDraw.Draw(image)
         draw.rounded_rectangle((28, 25, 1052, 215), radius=22, fill="#172B42")
-        draw.text((58, 44), "群友接下来课程" if upcoming else "群内当前正在上课", font=fonts[38], fill="white")
+        draw.text((58, 44), "群友接下来课程" if upcoming else "群友课程盘点", font=fonts[38], fill="white")
         draw.text((60, 110), f"{at:%Y-%m-%d %H:%M:%S} · {result['timezone']}", font=fonts[22], fill="#CFDFEB")
         subtitle = (f"{result['members_with_next']}位群友 · 按上课时间排序 · "
                     f"{result['range_start'][5:10]}至{result['range_end'][5:10]}" if upcoming else
-                    f"{result['members_in_class']}位群友 · 按下课时间从早到晚")
+                    f"上课中 {result['members_in_class']}人 · 下一节课 {result.get('members_with_next',0)}人")
         draw.text((60, 152), subtitle, font=fonts[25], fill="#CFDFEB")
-        draw.text((54, 236), "上课 / 下课" if upcoming else "下课 / 开始", font=fonts[22], fill="#586D80")
+        draw.text((54, 236), "上课 / 下课" if upcoming else "状态 / 时间", font=fonts[22], fill="#586D80")
         draw.text((230, 236), "群友 / 科目", font=fonts[22], fill="#586D80")
         draw.text((795, 236), "教室", font=fonts[22], fill="#586D80")
         y = 279
@@ -182,9 +182,9 @@ def render_group_current(result: dict, name: str = "") -> list[bytes]:
     def finish():
         nonlocal y
         if upcoming:
-            draw.text((44,y+8),f"范围内无后续课 {result['members_without_upcoming_count']}人；未建课表者未知",font=fonts[22],fill="#586D80")
+            draw.text((44,y+8),f"已建立课表成员中，范围内无后续课 {result['members_without_upcoming_count']}人",font=fonts[22],fill="#586D80")
             y+=34
-        text = (f"按已建立课表统计 {result['members_with_timetable']}/{result['group_member_count']}人"
+        text = (f"按已建立课表统计 {result['members_with_timetable']}人"
                 f" · 结果{result['page']}/{result['total_pages']}页 · 图片{len(pages)+1}")
         draw.text((44, y + 16), text, font=fonts[22], fill="#586D80")
         output = BytesIO()
@@ -202,12 +202,15 @@ def render_group_current(result: dict, name: str = "") -> list[bytes]:
             new_page()
         draw.rounded_rectangle((34, y, 1046, y + height - 9), radius=12, fill="white")
         start, end = datetime.fromisoformat(row["start"]), datetime.fromisoformat(row["end"])
-        main_time = start if upcoming else end
+        status=row.get('status','下一节课' if upcoming else '上课中')
+        is_next=status=='下一节课'
+        main_time = start if is_next else end
         draw.text((54, y + 10), main_time.strftime("%H:%M"), font=fonts[28], fill="#256B91")
-        draw.text((54, y + 51), main_time.strftime("%m-%d") if upcoming or main_time.date() != at.date() else "下课", font=fonts[22], fill="#586D80")
-        draw.text((54, y + 84), (end.strftime("%H:%M")+"下课") if upcoming else start.strftime("%H:%M")+"开始",font=fonts[22],fill="#586D80")
-        display = wrapped(draw, f"{row['member_name']} ({row['user_id']})", fonts[22], 520, 1)[0]
+        draw.text((54, y + 51), main_time.strftime("%m-%d") if is_next or main_time.date() != at.date() else "下课", font=fonts[22], fill="#586D80")
+        draw.text((54, y + 84), (end.strftime("%H:%M")+"下课") if is_next else start.strftime("%H:%M")+"开始",font=fonts[22],fill="#586D80")
+        display = wrapped(draw, f"{row['member_name']} ({row['user_id']})", fonts[22], 360, 1)[0]
         draw.text((230, y + 8), display, font=fonts[22], fill="#586D80")
+        draw.text((630,y+8),status,font=fonts[22],fill="#9A6700" if is_next else "#256B91")
         for index, line in enumerate(titles):
             draw.text((230, y + 44 + index * 42), line, font=fonts[28], fill="#172B42")
         for index, line in enumerate(rooms):

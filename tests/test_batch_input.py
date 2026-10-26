@@ -180,9 +180,11 @@ async def test_batch_tool_confirm_requires_real_new_message_and_live_admin(group
     assert not same["success"]
     source["message_id"] = "confirmation-456"
     members["100"]["role"] = "member"
+    p.ctx.config.get.return_value=[]
     failed = await p.confirm_timetable_batch(message_id="confirmation-456", draft_token=token, **context)
     assert not failed["success"] and len(p.store.course_details(bob)) == 1
     members["100"]["role"] = "admin"
+    p.ctx.config.get.return_value=["qq:100"]
     result = await p.confirm_timetable_batch(message_id="confirmation-456", draft_token=token, **context)
     assert result["status"] == "applied" and len(p.store.course_details(bob)) == 3
     assert len(p.store.course_details(actor)) == 1

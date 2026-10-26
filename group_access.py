@@ -58,10 +58,17 @@ async def member_info(ctx, group: str, user: str) -> dict:
 
 
 async def require_admin(ctx, actor_owner: str):
-    _, group, actor = owner_parts(actor_owner)
-    info = await member_info(ctx, group, actor)
-    if info["role"] not in {"owner", "admin"}:
-        raise ValueError("只有本群群主或管理员可以增删改其他成员课表；未修改任何课程")
+    platform, _, actor = json.loads(actor_owner)
+    permissions = await ctx.config.get("plugin.permission", [])
+    if not isinstance(permissions,list) or any(not isinstance(x,str) for x in permissions):
+        raise ValueError("无法读取MaiBot管理员配置，未修改任何课程")
+    allowed = set()
+    for value in permissions:
+        prefix,separator,uid=value.strip().partition(":")
+        if separator:
+            allowed.add((prefix.strip().lower(),uid.strip()))
+    if (platform.strip().lower(),actor) not in allowed:
+        raise ValueError("只有MaiBot内设置的管理员可以代管他人课表；QQ群主/群管理员身份不授予此权限")
 
 
 async def list_group_members(ctx, actor_owner: str) -> list[dict]:

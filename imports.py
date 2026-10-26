@@ -180,12 +180,17 @@ def snowluma_source(detail: dict, current: dict, source_id: str) -> dict:
         raise ValueError("SnowLuma 返回的引用消息缺少有效 message_id/real_id，请查看插件日志")
     if returned_id != protocol_id(source_id):
         raise ValueError("SnowLuma 返回的消息编号与引用目标不一致，请查看插件日志中的引用校验信息")
-    if protocol_id(detail.get("group_id")) in {"", "0"}:
-        raise ValueError("SnowLuma 返回的引用消息缺少群号，不能确认文件归属，请查看插件日志")
-    if protocol_id(detail["group_id"]) != protocol_id(group_id):
-        raise ValueError("SnowLuma 返回的群号与当前群不一致，请查看插件日志中的引用校验信息")
-    if detail.get("message_type") is not None and detail["message_type"] != "group":
-        raise ValueError("被引用文件不是群消息，未修改课表")
+    if group_id:
+        if protocol_id(detail.get("group_id")) in {"", "0"}:
+            raise ValueError("SnowLuma 返回的引用消息缺少群号，不能确认文件归属，请查看插件日志")
+        if protocol_id(detail["group_id"]) != protocol_id(group_id):
+            raise ValueError("SnowLuma 返回的群号与当前群不一致，请查看插件日志中的引用校验信息")
+        if detail.get("message_type") is not None and detail["message_type"] != "group":
+            raise ValueError("被引用文件不是群消息，未修改课表")
+    elif detail.get("message_type")!="private" or protocol_id(detail.get("group_id")) not in {"","0"}:
+        raise ValueError("被引用文件不是当前私聊消息，未修改课表")
+    elif detail.get("user_id") is not None and protocol_id(detail["user_id"])!=protocol_id(user_id):
+        raise ValueError("私聊文件的会话对象与当前用户不一致")
     if protocol_id(sender.get("user_id") or detail.get("user_id")) != protocol_id(user_id):
         raise ValueError("请引用你自己在本群上传的 ICS 文件")
     segments = detail.get("message")
@@ -194,5 +199,5 @@ def snowluma_source(detail: dict, current: dict, source_id: str) -> dict:
     files = [{"type": "file", "data": normalized_file(s["data"])} for s in segments
              if isinstance(s, dict) and s.get("type") == "file" and isinstance(s.get("data"), dict)]
     return {"message_id": source_id, "platform": current["platform"], "session_id": current["session_id"],
-            "message_info": {"group_info": info["group_info"], "user_info": info["user_info"]},
+            "message_info": {"group_info": info.get("group_info"), "user_info": info["user_info"]},
             "raw_message": files}

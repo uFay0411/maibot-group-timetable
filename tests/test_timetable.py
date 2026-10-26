@@ -305,6 +305,7 @@ def test_sdk_components_and_manifest():
         ("TOOL", "import_wakeup_timetable"),
         ("TOOL", "import_ics_timetable"),
         ("TOOL", "query_group_current_courses"),
+        ("TOOL", "personal_timetable"),
         ("TOOL", "query_group_upcoming_courses"),
         ("TOOL", "parse_timetable_input"),
         ("TOOL", "preview_timetable_batch"),

@@ -33,10 +33,15 @@ from .group_current import format_group_current, group_current as collect_group_
 from .group_upcoming import format_group_upcoming, group_upcoming as collect_group_upcoming
 from .batch import apply_batch, cancel_batch, format_preview, prepare_batch, read_draft
 from .recognition import recognize
+from .reminders import remind_user
+from .personal import MergedView, accessible_members, parts as owner_parts_any, private_route
 from .presentation import command_query, format_query, render_group_current, render_timetable
 from .wakeup import fetch_schedule as fetch_wakeup_schedule, to_ics as wakeup_to_ics
 
-HELP = """群聊课表（未指定成员时操作自己在本群的课表）
+HELP = """个人课表（群聊按群隔离；私聊可管理个人/已选来源课表）
+/课表 私聊提醒 开|关   /课表 提醒方式 私聊|群聊|关闭
+/课表 来源 [群号|个人|合并] [QQ号，MaiBot管理员代管]
+/课表 合并查询 [明天|日期] [天数] [图片] —— 本人的多群实时合并去重
 也可以直接问：明天有什么课？这周有哪些课？下一节课在哪？
 早八查询：明天有早八吗？这周哪几天没早八？下一次早八是什么课？
 模糊查课：明天高数在哪上？这周有线代吗？大英什么时候上？
@@ -66,7 +71,7 @@ HELP = """群聊课表（未指定成员时操作自己在本群的课表）
 /课表 批量删课 课程编号1 课程编号2 …（整门课停用）
 /课表 批量停课 课次编号1 课次编号2 …（仅列出的课次）
 /课表 确认 草稿编号   /课表 取消 草稿编号 —— 先预览再统一写入，30分钟有效
-普通群成员可查同群群友课表；代改只允许当前群主/管理员，权限实时校验。
+普通群成员可查同群群友课表；代改只允许MaiBot管理员，权限实时校验。
 课程编号/课次编号见查询结果；名称含空格时请用双引号包围。
 调课只影响一个课次。换教室但时间不变时，调课填原日期和时间。"""
 
@@ -97,8 +102,10 @@ def identity(message: dict) -> tuple[str, str, str, str, str]:
     gid = str(group.get("group_id", ""))
     uid = str(user.get("user_id", ""))
     stream = str(message.get("session_id", ""))
-    if not all((platform, gid, uid, stream)):
-        raise ValueError("请在群聊中使用个人课表")
+    if not all((platform, uid, stream)):
+        raise ValueError("消息缺少平台、用户或真实聊天流身份")
+    if info.get('group_info') and not gid:
+        raise ValueError("群消息缺少群号")
     owner = json.dumps([platform, gid, uid], ensure_ascii=False, separators=(",", ":"))
     return owner, stream, uid, str(user.get("user_cardname") or user.get("user_nickname") or uid), platform
 
@@ -124,6 +131,7 @@ class TimetablePlugin(MaiBotPlugin):
         self.task = None
         self.selection_contexts = {}
         self.image_receipts = {}
+        self.private_errors = {}
 
     def tool_error(self, exc):
         result = {"success": False, "content": str(exc), "error": str(exc)}
@@ -135,6 +143,36 @@ class TimetablePlugin(MaiBotPlugin):
         if not isinstance(target, str):
             raise ValueError("目标成员应为QQ号、@成员或群名片")
         parts = json.loads(actor)
+        if not parts[1]:
+            selected=await asyncio.to_thread(self.store.private_scope,actor)
+            source=owner_parts_any(selected) if selected else parts
+            uid=target.strip().removeprefix('@')
+            if not uid:
+                uid=source[2]
+            elif uid in {'我','自己','本人'}:
+                uid=parts[2]
+            if not re.fullmatch(r'[1-9]\d{0,19}',uid):
+                raise ValueError('私聊中请用准确QQ号指定成员')
+            if uid!=parts[2]:
+                await require_admin(self.ctx,actor)
+            owner=json.dumps([parts[0],source[1],uid],ensure_ascii=False,separators=(',',':'))
+            if source[1]:
+                from .group_access import member_info
+                info=await member_info(self.ctx,source[1],uid)
+                member=await asyncio.to_thread(self.store.get_member,owner)
+                name=info['name']
+            else:
+                if uid==parts[2]:
+                    try:
+                        previous=await asyncio.to_thread(self.store.get_member,owner)
+                        name=previous['name']
+                    except ValueError:
+                        name=uid
+                    await asyncio.to_thread(self.store.member,owner,stream,uid,name,self.config.timetable.default_timezone)
+                member=await asyncio.to_thread(self.store.get_member,owner)
+                name=member['name']
+            return {'owner':owner,'stream':stream,'storage_stream':member['stream'],'user_id':uid,'name':name,
+                    'is_self':uid==parts[2],'merged':not selected and uid==parts[2]}
         if not target.strip() or target.strip().removeprefix("@") in {"我", "自己", "本人", parts[2]}:
             try:
                 member = await asyncio.to_thread(self.store.get_member, actor)
@@ -153,10 +191,10 @@ class TimetablePlugin(MaiBotPlugin):
         except ValueError:
             if not create:
                 raise ValueError("该成员还没有在本群建立课表，请先加课或导入") from None
-            await asyncio.to_thread(self.store.member, target["owner"], target["stream"], target["user_id"],
+            await asyncio.to_thread(self.store.member, target["owner"], target.get('storage_stream',target["stream"]), target["user_id"],
                                     target["name"], self.config.timetable.default_timezone)
             return
-        if member["stream"] != target["stream"]:
+        if member["stream"] != target.get('storage_stream',target["stream"]):
             raise ValueError("当前群与目标课表聊天流不一致")
 
     def result_context(self, result: dict, target: dict, **extra) -> dict:
@@ -181,13 +219,15 @@ class TimetablePlugin(MaiBotPlugin):
             if not saved or saved["expires"] < monotonic() or saved["actor"] != actor or saved["message_id"] != message_id:
                 raise ValueError("查询上下文已失效或不属于本次请求，请重新查询目标成员课表")
             target = await self.target_member(actor, stream, saved["target"]["user_id"])
+            if target["owner"]!=saved["target"]["owner"]:
+                raise ValueError("课表来源已变化，请重新查询后维护")
             if target_member:
                 explicit = await self.target_member(actor, stream, target_member)
                 if explicit["owner"] != target["owner"]:
                     raise ValueError("查询上下文与维护目标不一致，未修改课表")
             return target
         if not target_member and any(value["actor"] == actor and value["message_id"] == message_id
-                                    and value["expires"] > monotonic() and value["target"]["owner"] != actor
+                                    and value["expires"] > monotonic() and not value["target"]["is_self"]
                                     for value in self.selection_contexts.values()):
             raise ValueError("本次请求查询过群友课表，请明确target_member或回传selection_token；不会默认修改自己的课表")
         return await self.target_member(actor, stream, target_member)
@@ -218,7 +258,7 @@ class TimetablePlugin(MaiBotPlugin):
         members = await list_group_members(self.ctx, actor)
         now = datetime.now(ZoneInfo("UTC"))
         result = await asyncio.to_thread(collect_group_current, self.store, platform, group_id, stream, members,
-                                        self.config.timetable.default_timezone, now, page)
+                                        self.config.timetable.default_timezone, now, page,include_next=True)
         result["output_format"] = output_format
         if output_format == "image":
             target = {"owner": json.dumps([platform, group_id, "*group_current*"], separators=(",", ":")),
@@ -299,7 +339,7 @@ class TimetablePlugin(MaiBotPlugin):
         return await self.batch_preview(actor,target,request_id,"加课",courses=courses,mode=mode)
 
     @Tool("parse_timetable_input", visibility="visible", timeout_ms=120000,
-        description="从当前用户实际发来的课表文字/图片或引用原文识别多门课程并生成待确认预览，不能直接写入。用户说把这张图/这段文字导入课表时使用。source_message_id可填原图原文msg_id，默认引用消息或当前消息；只能读取本群本人或管理目标的真实消息。notes补充用户给出的学期第一周周一日期、节次钟点、周次，不能猜。缺失信息会报需补充。识别后必须展示条目，请用户在新消息确认；不可同一次请求自动确认。默认合并，替换必须用户明确要求。代导入须当前群主/管理员。",
+        description="从当前用户实际发来的课表文字/图片或引用原文识别多门课程并生成待确认预览，不能直接写入。用户说把这张图/这段文字导入课表时使用。source_message_id可填原图原文msg_id，默认引用消息或当前消息；只能读取本群本人或管理目标的真实消息。notes补充用户给出的学期第一周周一日期、节次钟点、周次，不能猜。缺失信息会报需补充。识别后必须展示条目，请用户在新消息确认；不可同一次请求自动确认。默认合并，替换必须用户明确要求。代导入须当前MaiBot管理员。",
         parameters={"message_id":{"type":"string","required":True},"source_message_id":{"type":"string","default":""},
             "target_member":{"type":"string","default":""},"notes":{"type":"string","default":""},
             "mode":{"type":"string","enum":["合并","替换"],"default":"合并"}})
@@ -317,7 +357,7 @@ class TimetablePlugin(MaiBotPlugin):
             return self.tool_error(exc)
 
     @Tool("preview_timetable_batch", visibility="visible",
-        description="批量加课、整门删课或单次停课，先验证整批并生成预览，尚不写入。加课courses每项需真实date/start_time/end_time/subject，可填classroom和每周连续weeks；不连续周次展开多条。批量删课先查询目标课程得到course_ids，影响所有周；批量停课先查询得到lesson_ids，只影响列出的课次。目标不明或编号不明先询问/查询，不能编造。展示完整预览并等待用户在新消息明确确认后调用confirm_timetable_batch。代改实时核验当前群管理身份。图片文字导入优先parse_timetable_input。",
+        description="批量加课、整门删课或单次停课，先验证整批并生成预览，尚不写入。加课courses每项需真实date/start_time/end_time/subject，可填classroom和每周连续weeks；不连续周次展开多条。批量删课先查询目标课程得到course_ids，影响所有周；批量停课先查询得到lesson_ids，只影响列出的课次。目标不明或编号不明先询问/查询，不能编造。展示完整预览并等待用户在新消息明确确认后调用confirm_timetable_batch。代改实时核验当前MaiBot管理身份。图片文字导入优先parse_timetable_input。",
         parameters={"message_id":{"type":"string","required":True},"target_member":{"type":"string","default":""},
             "action":{"type":"string","enum":["加课","删课","停课"],"required":True},
             "courses":{"type":"array","items":{"type":"object","properties":{
@@ -372,7 +412,7 @@ class TimetablePlugin(MaiBotPlugin):
 
     @Tool(
         "query_group_current_courses",
-        description=("查询本群各群友按课表当前正在上的课，并按下课时间从早到晚排序。"
+        description=("盘点本群已建立课表成员的课程；优先当前正在上的课，没有则取未来31天内下一节。标注上课中/下一节课，未建立课表者不显示。上课中按下课时间排在前，下一节课按开课时间排在后。"
                      "用户问‘群里谁在上课’、‘大家现在都在上什么’、‘谁最早下课’、‘按下课时间排一下’时使用，"
                      "无需逐个查询成员。message_id是本次提问消息msg_id，群号和当前时刻由后端确定，不接受模型指定。"
                      "只包括当前群现有成员已建立的课表，关闭提醒仍参与；未知课表不能猜测。"
@@ -415,14 +455,97 @@ class TimetablePlugin(MaiBotPlugin):
         await asyncio.to_thread(self.store.member, owner, stream, uid, name, self.config.timetable.default_timezone)
         return owner, stream
 
+    async def merged_view(self,actor: str) -> MergedView:
+        platform,_,uid=owner_parts_any(actor)
+        members=await accessible_members(self.ctx,self.store,platform,uid)
+        view=MergedView(self.store,actor,members,self.config.timetable.default_timezone)
+        all_members=await asyncio.to_thread(self.store.user_members,platform,uid)
+        view.skipped=len(all_members)-len(members)
+        return view
+
+    async def personal_action(self,actor: str,stream: str,action: str,source_group: str='',target_user: str='',
+                              reminder_mode: str='private',period: str='未来7天',days: int=7,output_format: str='text'):
+        platform,group,uid=owner_parts_any(actor)
+        if any(not isinstance(x,str) or len(x)>512 for x in (action,source_group,target_user,reminder_mode,output_format)):
+            raise ValueError("个人课表参数必须为不超过512字的文本")
+        if target_user and action!="切换来源":
+            raise ValueError("目标用户只用于切换来源，提醒和合并查询仅作用于本人")
+        if action=='私聊提醒':
+            if reminder_mode not in {'private','group','off'}:
+                raise ValueError('提醒方式为private/group/off')
+            members=await accessible_members(self.ctx,self.store,platform,uid)
+            if reminder_mode=='private':
+                await private_route(self.ctx,platform,uid,members)
+            await asyncio.to_thread(self.store.set_reminder_mode,platform,uid,reminder_mode)
+            return {'success':True,'reminder_mode':reminder_mode,'content':'已设置此用户跨群统一提醒方式；相同课次全局只提醒一次，不同时发到多个群和私聊。'}
+        if action=='来源':
+            members=await accessible_members(self.ctx,self.store,platform,uid)
+            sources=[{'source_group':owner_parts_any(x['owner'])[1] or '个人','user_id':uid} for x in members]
+            return {'success':True,'sources':sources,'selected_source':await asyncio.to_thread(self.store.private_scope,actor),
+                    'reminder_mode':await asyncio.to_thread(self.store.reminder_mode,platform,uid),'last_reminder_error':self.private_errors.get('person:'+platform+':'+uid,''),'content':'这些是本人当前可访问的课表来源。私聊默认合并查询；维护默认个人课表。可用切换来源选择一个群或个人，合并切回实时合并查询。'}
+        if action=='切换来源':
+            if group:
+                raise ValueError('切换来源仅用于私聊，不改变群内课表归属')
+            if source_group=='合并':
+                if target_user and target_user!=uid:
+                    raise ValueError('合并视图只能查看本人课表')
+                await asyncio.to_thread(self.store.set_private_scope,actor,'')
+                return {'success':True,'content':'已切回本人跨群合并查询；维护默认个人课表。'}
+            user=target_user or uid
+            if not re.fullmatch(r'[1-9]\d{0,19}',user):
+                raise ValueError('目标用户必须为准确QQ号')
+            if user!=uid:
+                await require_admin(self.ctx,actor)
+            gid='' if source_group=='个人' else source_group
+            if gid and not re.fullmatch(r'[1-9]\d{0,19}',gid):
+                raise ValueError('来源应为群号、个人或合并')
+            owner=json.dumps([platform,gid,user],ensure_ascii=False,separators=(',',':'))
+            if not gid and user==uid:
+                await asyncio.to_thread(self.store.member,owner,stream,user,user,self.config.timetable.default_timezone)
+            if gid:
+                from .group_access import member_info
+                await member_info(self.ctx,gid,user)
+            await asyncio.to_thread(self.store.get_member,owner)
+            await asyncio.to_thread(self.store.set_private_scope,actor,owner)
+            return {'success':True,'source_group':gid or '个人','user_id':user,'content':'已切换私聊课表来源，后续查询和维护作用于此来源；回复只发到当前私聊。'}
+        if action=='合并查询':
+            if output_format not in {'text','image'}:
+                raise ValueError('输出格式为text或image')
+            view=await self.merged_view(actor)
+            result=await asyncio.to_thread(query_schedule,view,actor,period,days,'','全天')
+            view.annotate(result)
+            if output_format=='image':
+                await self.send_table_images(result,{'owner':actor,'name':'多群合并课表','stream':stream})
+                result['image_sent']=True
+            result['content']=model_visible_content(result)
+            return result
+        raise ValueError('个人课表操作为来源、切换来源、私聊提醒、合并查询')
+
+    @Tool('personal_timetable',visibility='visible',description='管理本人私聊和多群课表。来源列出本人可访问课表；切换来源仅限私聊，source_group为群号/个人/合并，维护默认个人课表，选群后修改该群来源。代管其他QQ号仅允许MaiBot内设置管理员，QQ群角色不授权。合并查询实时合并本人个人与多群课表并按同科目同上下课时刻去重，教室冲突如实提示，可发图片。私聊提醒设置private/group/off，跨群同课次只提醒一次；开启前检查好友或QQ临时会话开关，未知不强发。必须根据实际结果reply自然说明。',
+        parameters={'message_id':{'type':'string','required':True},'action':{'type':'string','enum':['来源','切换来源','私聊提醒','合并查询'],'required':True},
+            'source_group':{'type':'string','default':''},'target_user':{'type':'string','default':''},
+            'reminder_mode':{'type':'string','enum':['private','group','off'],'default':'private'},
+            'period':{'type':'string','default':'未来7天'},'days':{'type':'integer','minimum':1,'maximum':31,'default':7},
+            'output_format':{'type':'string','enum':['text','image'],'default':'text'}})
+    async def personal_timetable(self,message_id='',action='',source_group='',target_user='',reminder_mode='private',period='未来7天',days=7,output_format='text',**context):
+        try:
+            if not self.config.plugin.enabled or not message_id:
+                raise ValueError('插件已关闭或缺少真实请求消息编号')
+            actor,stream=await self.query_owner(message_id,context)
+            return await self.personal_action(actor,stream,action,source_group,target_user,reminder_mode,period,days,output_format)
+        except (ValueError,ZoneInfoNotFoundError) as exc:
+            return self.tool_error(exc)
+
     async def file_content(self, message: dict, file: dict) -> bytes:
         if not file.get("url") and not file.get("base64") and file.get("file_id"):
             if message.get("platform") == "qq":
                 group_id = (message["message_info"].get("group_info") or {}).get("group_id", "")
-                params = {"group_id": int(group_id), "file_id": file["file_id"]}
+                params = {"file_id": file["file_id"]}
+                if group_id:
+                    params["group_id"]=int(group_id)
                 if file.get("busid") is not None:
                     params["busid"] = file["busid"]
-                response = await call_snowluma_api(self.ctx, "file.get_group_file_url", params=params)
+                response = await call_snowluma_api(self.ctx, "file.get_group_file_url" if group_id else "file.get_private_file_url", params=params)
                 if not isinstance(response, dict) or response.get("retcode") != 0:
                     raise ValueError("SnowLuma 未返回有效群文件下载链接，请查看适配器日志")
                 data = response.get("data") or {}
@@ -444,7 +567,7 @@ class TimetablePlugin(MaiBotPlugin):
             if not isinstance(source, dict) or "message_info" not in source:
                 raise ValueError("没有找到本次提问消息，请使用当前用户提问消息前缀的 msg_id 作为 message_id 重试")
             owner, source_stream, source_user, _, source_platform = identity(source)
-            source_group = str(source["message_info"]["group_info"]["group_id"])
+            source_group = str((source["message_info"].get("group_info") or {}).get("group_id") or '')
             if source_stream != stream_id or str(source.get("message_id") or "").strip() != message_id.strip():
                 raise ValueError("提问消息不属于当前聊天流或编号不一致，拒绝查询")
             for field, value in (("platform", source_platform), ("group_id", source_group), ("user_id", source_user)):
@@ -453,6 +576,8 @@ class TimetablePlugin(MaiBotPlugin):
                     raise ValueError("提问消息的群或作者与 Host 上下文不一致，拒绝查询")
             if source.get("is_notify"):
                 raise ValueError("message_id 应指向用户本次提问，不能使用通知事件")
+            if not source_group:
+                await self.register_member(source)
             return owner, stream_id
         # 兼容 Host 确实注入了当前消息作者的旧调用；群聊天流缺少 user_id 时必须用消息编号。
         platform = str(context.get("platform") or "").strip()
@@ -529,6 +654,8 @@ class TimetablePlugin(MaiBotPlugin):
                     if explicit["owner"] != saved["target"]["owner"]:
                         raise ValueError("选课上下文的成员与显式目标不一致，请重新读取候选")
                 target = await self.target_member(actor, stream_id, saved["target"]["user_id"])
+                if target["owner"]!=saved["target"]["owner"]:
+                    raise ValueError("课表来源已变化，请重新读取候选")
                 values = saved["values"]
                 period, days, subject, time_of_day, output_format = (values[key] for key in
                     ("period", "days", "subject", "time_of_day", "output_format"))
@@ -541,10 +668,13 @@ class TimetablePlugin(MaiBotPlugin):
                     member = await asyncio.to_thread(self.store.get_member, target["owner"])
                 except ValueError:
                     raise ValueError("该成员尚未在本群建立课表，请先导入 ICS、WakeUp口令或加课") from None
-                if member["stream"] != stream_id:
+                if member["stream"] != target.get('storage_stream',stream_id):
                     raise ValueError("当前群聊上下文与课表归属不一致，无法查询")
-                result = await asyncio.to_thread(semantic_query, self.store, target["owner"], period, days, subject,
+                view=await self.merged_view(actor) if target.get('merged') else None
+                result = await asyncio.to_thread(semantic_query, view or self.store, target["owner"], period, days, subject,
                                                 time_of_day, course_ids, catalog_offset)
+                if view:
+                    view.annotate(result)
                 result = self.result_context(result, target, output_format=output_format)
                 if result.get("requires_course_selection"):
                     token = self.selection_context(actor, message_id, target, {"period": period, "days": days,
@@ -571,13 +701,13 @@ class TimetablePlugin(MaiBotPlugin):
                      "调课可只填新教室，日期或开始时间未填保留原值，结束时间未填保留原时长。"
                      "日期保留用户相对说法，由插件按成员时区解析。不能将第几节课猜成钟点。"
                      "课程列表为只读，可查含停用课程的 course_id；恢复会撤销整门课全部本地修改及停课。"
-                     "target_member 留空维护自己，指定群友时只有本群群主/管理员可代改，后端实时校验，不接受你声称的管理权限。"
+                     "target_member 留空维护自己，指定群友时只有MaiBot内设置的管理员可代改，后端实时校验，不接受你声称的管理权限。"
                      "代改前先查该群友课表取得真实编号。message_id 始终取管理员本次请求的用户消息，不换成目标成员消息。"
                      "可回传查询返回的selection_token绑定维护目标；曾查询群友后不能漏传目标直接修改自己。"
                      "必须依据 success 和实际 before/after 数据通过 reply 自然说明，失败时不能声称已修改。"),
         parameters={
             "message_id": {"type": "string", "description": "本次明确请求维护课表的用户消息 msg_id，Host 会还原短别名。", "required": True},
-            "target_member": {"type": "string", "default": "", "description": "目标群友QQ号、@或群名片；留空自己，代改必须由群主或管理员发起。"},
+            "target_member": {"type": "string", "default": "", "description": "目标群友QQ号、@或群名片；留空自己，代改必须由MaiBot管理员发起。"},
             "selection_token": {"type": "string", "default": "", "description": "可回传query_timetable返回的上下文，绑定本次维护的目标群友；若同时填写target_member必须一致。"},
             "action": {"type": "string", "enum": ["加课", "调课", "停课", "改课", "删课", "恢复", "课程列表", "清空"],
                        "description": "调课/停课只影响一次；改课/删课/恢复影响整门课；课程列表只读。", "required": True},
@@ -635,7 +765,7 @@ class TimetablePlugin(MaiBotPlugin):
     @Tool(
         "import_ics_timetable",
         description=("用户明确要求解析当前发送或引用的ICS文件时使用。target_member留空导入自己，"
-                     "本群群主/管理员可指定同群群友代导入。引用文件必须是发起人或目标成员在本群上传的，"
+                     "MaiBot内设置的管理员可指定同群群友代导入。引用文件必须是发起人或目标成员在本群上传的，"
                      "不接受其他群的文件。message_id始终为本次发起人的请求消息。默认合并，只有明确要求才替换。"
                      "替换清除目标成员旧课程及本地修改，导入失败保留原课表。根据实际结果通过reply回复。"),
         parameters={
@@ -676,14 +806,14 @@ class TimetablePlugin(MaiBotPlugin):
     @Tool(
         "import_wakeup_timetable",
         description=("用户提供 WakeUp课程表分享口令/完整分享文案并明确要求导入时，调用此工具导入到该用户在当前群的"
-                     "个人课表。管理员可指定target_member代导入同群群友，后端实时验证群主/管理员角色。"
+                     "个人课表。管理员可指定target_member代导入同群群友，后端实时验证MaiBot管理员角色。"
                      "message_id 必须取本次用户消息的 msg_id；工具只从这条真实消息读取口令，不能借用其他人"
                      "或历史消息里的口令。默认合并，只有用户明确要求替换整张旧课表时才填替换。"
                      "口令通常30分钟有效，过期需用户重新生成。不能编造课表内容或在回复中复述口令。"
                      "依据 success 和 imported_arrangements 通过 reply 自然说明导入结果。"),
         parameters={
             "message_id": {"type": "string", "description": "本次明确要求导入、并包含 WakeUp 分享口令的用户消息 msg_id。", "required": True},
-            "target_member": {"type": "string", "default": "", "description": "留空导入自己；群主/管理员可指定同群QQ号、@或群名片代导入。"},
+            "target_member": {"type": "string", "default": "", "description": "留空导入自己；MaiBot管理员可指定同群QQ号、@或群名片代导入。"},
             "mode": {"type": "string", "enum": ["合并", "替换"], "default": "合并",
                      "description": "默认合并；替换会清除旧课程和全部本地修改，只在用户明确要求替换时使用。"},
         }, visibility="visible",
@@ -717,7 +847,10 @@ class TimetablePlugin(MaiBotPlugin):
         if not files:
             return {}
         try:
-            owner, stream = await self.register_member(message)
+            actor, stream = await self.register_member(message)
+            target=await self.target_member(actor,stream,"")
+            await self.writable_member(actor,target,create=True)
+            owner=target["owner"]
         except ValueError:
             return {}
         async with self.locks[owner]:
@@ -788,6 +921,22 @@ class TimetablePlugin(MaiBotPlugin):
         return f"已从引用文件 {files[0]['name']} {mode}解析 {count} 门课程，跳过 {skipped} 个全天事项。"
 
     async def dispatch_body(self, owner: str, message: dict, body: str, target: dict, actor: str, read_only=False):
+        if target.get('merged'):
+            first=body.split(maxsplit=1)[0] if body.split() else ''
+            values=shlex.split(body) if first in {'今天','明天','后天','本周','下周','查询','搜索','未来7天','未来31天','下一节','图片'} else []
+            image='图片' in values
+            args=[x for x in values if x!='图片']
+            reads={'今天','明天','后天','本周','下周','查询','搜索','未来7天','未来31天','下一节'}
+            if not args and image:
+                args=['今天']
+            if args and args[0] in reads:
+                view=await self.merged_view(actor)
+                result=await asyncio.to_thread(command_query,view,owner,args)
+                view.annotate(result)
+                if image:
+                    await self.send_table_images(result,target)
+                    return None
+                return format_query(result,'多群合并课表')
         parsed_input = re.fullmatch(r"(?:文字导入|图片导入|文字解析|图片解析)(?:\s+(合并|替换))?(?:\s+([\s\S]*))?",body)
         batch = re.fullmatch(r"批量(加课|删课|停课)(?:\s+([\s\S]*))?",body)
         if parsed_input or batch:
@@ -838,7 +987,7 @@ class TimetablePlugin(MaiBotPlugin):
             return None
         read_actions = {"今天", "明天", "后天", "本周", "下周", "查询", "搜索", "课程", "状态", "未来7天", "未来31天", "下一节"}
         if read_only and args[0] not in read_actions:
-            raise ValueError("群友查询指令只读；增删改课表需本群群主/管理员使用管理指令")
+            raise ValueError("群友查询指令只读；增删改课表需MaiBot内设置的管理员使用管理指令")
         if args[0] == "解析" and len(args) <= 2 and quoted_message_id(message):
             return await self.import_quoted(message, owner, args[1] if len(args) == 2 else "合并", allowed_upload_owner=actor)
         if read_only and args[0] not in {"课程", "状态"}:
@@ -886,6 +1035,35 @@ class TimetablePlugin(MaiBotPlugin):
         try:
             actor, stream = await self.register_member(message)
             body = group_command_text(message, text).removeprefix("/课表").strip()
+            first=body.split(maxsplit=1)[0] if body.split() else ''
+            values=shlex.split(body) if first in {'来源','私聊提醒','提醒方式','合并查询'} else []
+            if values and values[0] in {'来源','私聊提醒','提醒方式','合并查询'}:
+                name,*args=values
+                if name=='来源':
+                    if len(args)>2:
+                        raise ValueError('用法：/课表 来源 [群号|个人|合并] [目标QQ号，MaiBot管理员代管]')
+                    found=await self.personal_action(actor,stream,'切换来源' if args else '来源',args[0] if args else '',args[1] if len(args)>1 else '')
+                elif name in {'私聊提醒','提醒方式'}:
+                    modes={'开':'private','关':'group','私聊':'private','群聊':'group','关闭':'off'}
+                    if len(args)!=1 or args[0] not in modes:
+                        raise ValueError('用法：/课表 私聊提醒 开|关，或 /课表 提醒方式 私聊|群聊|关闭')
+                    found=await self.personal_action(actor,stream,'私聊提醒',reminder_mode=modes[args[0]])
+                else:
+                    image='图片' in args
+                    args=[x for x in args if x!='图片']
+                    if len(args)>2 or (len(args)==2 and not args[1].isdigit()):
+                        raise ValueError('用法：/课表 合并查询 [今天|明天|日期] [天数] [图片]')
+                    found=await self.personal_action(actor,stream,'合并查询',period=args[0] if args else '未来7天',days=int(args[1]) if len(args)==2 else 7,output_format='image' if image else 'text')
+                if not found.get('image_sent'):
+                    rendered=format_query(found,'多群合并课表') if 'lessons' in found else found['content']
+                    if 'sources' in found:
+                        rendered+='\n'+'\n'.join(x['source_group'] for x in found['sources'])
+                    if 'reminder_mode' in found:
+                        rendered+='\n提醒方式：'+found['reminder_mode']
+                    if found.get('last_reminder_error'):
+                        rendered+='\n最近提醒未完成：'+found['last_reminder_error']
+                    await self.send_command_output(rendered,stream)
+                return True,None,True
             confirm = re.fullmatch(r"(确认|取消)\s+(\S+)",body)
             if confirm:
                 found=await self.confirm_batch(actor,stream,message,confirm.group(2),confirm.group(1))
@@ -933,7 +1111,7 @@ class TimetablePlugin(MaiBotPlugin):
             async with self.locks[target["owner"]]:
                 if prefix and prefix.group(1) == "管理":
                     first_action = body.split(maxsplit=1)[0].lower()
-                    # 管理指令即使目标是本人，也要求群管理身份，避免与个人指令混淆。
+                    # 管理指令即使目标是本人，也要求MaiBot管理身份，避免与个人指令混淆。
                     if target["is_self"]:
                         await require_admin(self.ctx, actor)
                     await self.writable_member(actor, target, create=first_action in {"加课", "解析", "wakeup", "口令", "导入口令", "批量加课"})
@@ -942,7 +1120,7 @@ class TimetablePlugin(MaiBotPlugin):
                         member = await asyncio.to_thread(self.store.get_member, target["owner"])
                     except ValueError:
                         raise ValueError("该群友尚未在本群建立课表，请先导入或由管理员加课") from None
-                    if member["stream"] != stream:
+                    if member["stream"] != target.get('storage_stream',stream):
                         raise ValueError("目标课表不属于当前群聊天流")
                 result = await self.dispatch_body(target["owner"], message, body, target, actor,
                                                   read_only=bool(prefix and prefix.group(1) == "群友"))
@@ -1082,7 +1260,29 @@ class TimetablePlugin(MaiBotPlugin):
             except Exception:
                 self.retry_after[owner] = now.timestamp() + 60
                 self.ctx.logger.exception("成员提醒失败: owner=%s", owner)
-        await asyncio.gather(*(check(m) for m in await asyncio.to_thread(self.store.members)))
+        members=await asyncio.to_thread(self.store.members)
+        people={}
+        legacy=[]
+        for member in members:
+            try:
+                platform,_,user=owner_parts_any(member['owner'])
+            except (ValueError,TypeError):
+                legacy.append(member)
+                continue
+            people[(platform,user)]=True
+        async def person(platform,user):
+            key='person:'+platform+':'+user
+            if now.timestamp()<self.retry_after.get(key,0):
+                return
+            try:
+                async with limit:
+                    await remind_user(self,platform,user,now)
+                self.private_errors.pop(key,None)
+            except Exception as exc:
+                self.retry_after[key]=now.timestamp()+60
+                self.private_errors[key]=safe_api_error(exc)
+                self.ctx.logger.warning('个人课表提醒未完成: %s',safe_api_error(exc))
+        await asyncio.gather(*(check(m) for m in legacy),*(person(platform,user) for platform,user in people))
 
     async def remind(self, member: dict, now: datetime):
         started = monotonic()

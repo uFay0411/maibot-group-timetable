@@ -42,6 +42,7 @@ def group(natural_tool):
         raise AssertionError(name)
 
     p.ctx.api.call.side_effect = api
+    p.ctx.config.get.return_value=["qq:100"]
     return p, context, actor, bob, members, source
 
 
@@ -68,10 +69,11 @@ async def test_group_admin_add_change_cancel_delete_and_restore(group, role):
     assert [x.title for x in lessons(p.store, actor)] == ["高等数学"]
 
 
-@pytest.mark.parametrize("role", ["member", None, "administrator"])
+@pytest.mark.parametrize("role", ["member", None, "administrator", "admin", "owner"])
 async def test_cannot_spoof_admin_role_or_mutate_others(group, role):
     p, context, _, bob, members, source = group
     members["100"]["role"] = role
+    p.ctx.config.get.return_value=[]
     source["message_info"]["user_info"]["role"] = "owner"
     token = lessons(p.store, bob)[0].token
     result = await p.manage_timetable(action="停课", lesson_id=token, target_member="200", message_id="question-123",
@@ -86,6 +88,7 @@ async def test_admin_role_is_refreshed_for_each_operation(group):
     first = await p.manage_timetable(action="调课", lesson_id=token, classroom="新教室", **args)
     assert first["success"]
     members["100"]["role"] = "member"
+    p.ctx.config.get.return_value=[]
     second = await p.manage_timetable(action="停课", lesson_id=first["after"]["lesson_id"], **args)
     assert not second["success"] and lessons(p.store, bob)[0].room == "新教室"
 
@@ -93,6 +96,7 @@ async def test_admin_role_is_refreshed_for_each_operation(group):
 async def test_non_admin_can_query_group_friend_by_card(group):
     p, context, _, _, members, _ = group
     members["100"]["role"] = "member"
+    p.ctx.config.get.return_value=[]
     result = await p.query_timetable(target_member="小明", message_id="question-123", **context)
     assert result["success"] and result["member"]["name"] == "小明"
     assert result["lessons"][0]["subject"] == "大学英语"
@@ -165,6 +169,7 @@ async def test_admin_command_accepts_real_at_segments(group):
 async def test_group_query_command_is_read_only(group):
     p, _, _, bob, members, _ = group
     members["100"]["role"] = "member"
+    p.ctx.config.get.return_value=[]
     await p.command(message=mentioned_command("/课表 群友 ", " 明天"))
     assert "小明" in p.ctx.send.text.call_args.args[0] and "大学英语" in p.ctx.send.text.call_args.args[0]
     await p.command(message=mentioned_command("/课表 群友 ", " 清空 确认"))
@@ -243,9 +248,11 @@ async def test_admin_natural_ics_import_and_non_admin_rejection(group):
     source["raw_message"].append({"type": "file", "data": {"name": "synthetic.ics", "base64": base64.b64encode(
         ics(uid="new-physics", summary="大学物理")).decode()}})
     members["100"]["role"] = "member"
+    p.ctx.config.get.return_value=[]
     refused = await p.import_ics_timetable(target_member="200", message_id="question-123", **context)
     assert not refused["success"] and len(p.store.course_details(bob)) == 1
     members["100"]["role"] = "admin"
+    p.ctx.config.get.return_value=["qq:100"]
     imported = await p.import_ics_timetable(target_member="200", mode="替换", message_id="question-123", **context)
     assert imported["success"] and lessons(p.store, bob)[0].title == "大学物理"
     assert lessons(p.store, actor)[0].title == "高等数学"
@@ -274,9 +281,11 @@ async def test_admin_natural_wakeup_import_targets_the_verified_member(group, sh
     fetch = AsyncMock(return_value=share)
     monkeypatch.setattr(entry, "fetch_wakeup_schedule", fetch)
     members["100"]["role"] = "member"
+    p.ctx.config.get.return_value=[]
     refused = await p.import_wakeup_timetable(target_member="200", message_id="question-123", **context)
     assert not refused["success"] and not fetch.called
     members["100"]["role"] = "admin"
+    p.ctx.config.get.return_value=["qq:100"]
     imported = await p.import_wakeup_timetable(target_member="200", mode="替换", message_id="question-123", **context)
     assert imported["success"] and imported["member"]["user_id"] == "200"
     assert lessons(p.store, bob)[0].title == "测试数学" and lessons(p.store, actor)[0].title == "高等数学"

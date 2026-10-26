@@ -57,7 +57,7 @@ def target_day(value: str, now: datetime):
 def manage_schedule(store: Store, owner: str, action: str, *, message_id: str, lesson_id: str = "",
                     course_id: str = "", date: str = "", start_time: str = "", end_time: str = "",
                     subject: str = "", classroom: str = "", weeks: int = 1,
-                    now: datetime | None = None) -> dict[str, Any]:
+                    now: datetime | None = None, confirm_clear: bool = False) -> dict[str, Any]:
     fields = {"action": action, "message_id": message_id, "lesson_id": lesson_id, "course_id": course_id,
               "date": date, "start_time": start_time, "end_time": end_time, "subject": subject, "classroom": classroom}
     if any(not isinstance(value, str) or len(value) > 512 for value in fields.values()):
@@ -72,9 +72,13 @@ def manage_schedule(store: Store, owner: str, action: str, *, message_id: str, l
     allowed = {"加课": {"date", "start_time", "end_time", "subject", "classroom"},
                "调课": {"lesson_id", "date", "start_time", "end_time", "classroom"},
                "停课": {"lesson_id"}, "改课": {"course_id", "subject", "classroom"},
-               "删课": {"course_id"}, "恢复": {"course_id"}, "课程列表": {"subject"}}
+               "删课": {"course_id"}, "恢复": {"course_id"}, "课程列表": {"subject"}, "清空": set()}
     if action not in allowed:
-        raise ValueError("操作请使用 加课、调课、停课、改课、删课、恢复、课程列表")
+        raise ValueError("操作请使用 加课、调课、停课、改课、删课、恢复、课程列表、清空")
+    if type(confirm_clear) is not bool or (confirm_clear and action != "清空"):
+        raise ValueError("confirm_clear 只用于清空课表，必须是布尔值")
+    if action == "清空" and not confirm_clear:
+        raise ValueError("清空会删除该成员本群的全部课表和本地调整，只有用户明确要求清空全部时才设置confirm_clear=true")
     if any(value and key not in allowed[action] for key, value in fields.items() if key not in {"action", "message_id"}):
         raise ValueError(f"{action}包含不适用的字段，请按工具说明传参，不会忽略这些字段执行")
     if action != "加课" and weeks != 1:
@@ -82,7 +86,13 @@ def manage_schedule(store: Store, owner: str, action: str, *, message_id: str, l
     zone = ZoneInfo(store.get_member(owner)["zone"])
     now = now.astimezone(zone) if now is not None else datetime.now(zone)
     result = {"success": True, "action": action, "timezone": str(zone)}
-    if action == "课程列表":
+    if action == "清空":
+        count = len(store.course_details(owner))
+        store.clear(owner)
+        result.update(scope="whole_timetable", removed_courses=count,
+                      content="已清空该成员在本群的课程、调课/停课记录与最近导入文件。其他成员和其他群不受影响。"
+                      "此操作需重新导入课表才能恢复，请通过reply如实说明。")
+    elif action == "课程列表":
         courses = store.course_details(owner)
         if subject:
             names, matching = subject_matches(subject, (x["subject"] for x in courses))

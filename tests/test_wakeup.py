@@ -266,7 +266,7 @@ async def test_default_merge_keeps_existing_schedule(importer):
 
 def test_natural_import_schema_never_accepts_model_supplied_token_or_identity():
     info = next(x for x in TimetablePlugin().get_components() if x["name"] == "import_wakeup_timetable")["metadata"]
-    assert set(info["parameters_raw"]) == {"message_id", "mode"}
+    assert set(info["parameters_raw"]) == {"message_id", "mode", "target_member"}
     assert info["parameters_raw"]["message_id"]["required"]
 
 

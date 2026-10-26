@@ -101,7 +101,8 @@ def test_query_tool_schema_exposes_dates_without_identity():
     info = tools[0]
     assert info["metadata"]["visibility"] == "visible"
     assert set(info["metadata"]["parameters_raw"]) == {
-        "message_id", "period", "days", "subject", "time_of_day", "course_ids", "catalog_offset"}
+        "message_id", "period", "days", "subject", "time_of_day", "course_ids", "catalog_offset",
+        "target_member", "output_format", "selection_token"}
     assert info["metadata"]["parameters_raw"]["message_id"]["required"] is True
 
 

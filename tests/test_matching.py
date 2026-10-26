@@ -93,12 +93,14 @@ async def test_natural_tool_reads_own_timetable_using_user_original_abbreviation
     catalog = await p.query_timetable(message_id="question-123", subject="高数", period="明天", **context)
     assert catalog["requires_course_selection"]
     ids = [x["course_id"] for x in catalog["courses"] if x["subject"] == "高等数学"]
-    result = await p.query_timetable(message_id="question-123", subject="高数", period="明天", course_ids=ids, **context)
+    result = await p.query_timetable(message_id="question-123", subject="高数", period="明天", course_ids=ids,
+                                     selection_token=catalog["selection_token"], **context)
     assert result["success"] and result["lessons"][0]["subject"] == "高等数学"
     other = json.dumps(["qq", "123", "200"], separators=(",", ":"))
     p.store.member(other, "group-stream", "200", "Bob", "Asia/Shanghai")
     p.store.import_ics(other, ics(summary="高等数学B", uid="bob-math"), "合并")
-    again = await p.query_timetable(message_id="question-123", subject="高数", course_ids=ids, **context)
+    again = await p.query_timetable(message_id="question-123", subject="高数", course_ids=ids,
+                                    selection_token=catalog["selection_token"], **context)
     assert again["total"] == 1 and again["subject_resolution"]["selected_subjects"] == ["高等数学"]
     assert len(p.store.course_details(owner)) == 1
 

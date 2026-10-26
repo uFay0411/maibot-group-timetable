@@ -42,7 +42,8 @@ async def test_llm_selected_id_queries_sizheng_without_reapplying_keyword_rules(
     first = await p.query_timetable(subject="思政", message_id="question-123", **context)
     # 这里只模拟 Planner 传入读到的编号，不声称已测试外部 LLM 的语义判断。
     selected = next(x["course_id"] for x in first["courses"] if x["subject"] == "思想道德与法治")
-    result = await p.query_timetable(subject="思政", course_ids=[selected], message_id="question-123", **context)
+    result = await p.query_timetable(subject="思政", course_ids=[selected], message_id="question-123",
+                                     selection_token=first["selection_token"], **context)
     data = visible(result)
     assert not data["requires_course_selection"] and data["total"] == 1
     assert data["lessons"][0]["subject"] == "思想道德与法治"
@@ -58,7 +59,8 @@ async def test_catalog_is_entire_own_timetable_even_when_course_not_on_requested
     assert "马克思主义基本原理" in {x["subject"] for x in result["courses"]}
     assert "先询问用户" in result["content"]
     selected = next(x["course_id"] for x in result["courses"] if x["subject"] == "马克思主义基本原理")
-    tomorrow = await p.query_timetable(subject="思政", period="明天", course_ids=[selected], message_id="question-123", **context)
+    tomorrow = await p.query_timetable(subject="思政", period="明天", course_ids=[selected], message_id="question-123",
+                                       selection_token=result["selection_token"], **context)
     assert tomorrow["total"] == 0
     assert tomorrow["subject_resolution"]["selected_subjects"] == ["马克思主义基本原理"]
 
@@ -69,10 +71,12 @@ async def test_same_subject_representative_includes_all_wakeup_arrangements(sema
     catalog = await p.query_timetable(subject="思政", message_id="question-123", **context)
     course = next(x for x in catalog["courses"] if x["subject"] == "思想道德与法治")
     assert course["arrangement_count"] == 2
-    result = await p.query_timetable(subject="思政", course_ids=[course["course_id"]], message_id="question-123", **context)
+    result = await p.query_timetable(subject="思政", course_ids=[course["course_id"]], message_id="question-123",
+                                     selection_token=catalog["selection_token"], **context)
     assert result["total"] == 2 and result["subject_resolution"]["included_arrangements"] == 2
-    afternoon = await p.query_timetable(subject="思政", course_ids=[course["course_id"]], time_of_day="晚上",
-                                      message_id="question-123", **context)
+    evening_catalog = await p.query_timetable(subject="思政", time_of_day="晚上", message_id="question-123", **context)
+    afternoon = await p.query_timetable(subject="思政", course_ids=[course["course_id"]],
+                                      selection_token=evening_catalog["selection_token"], message_id="question-123", **context)
     assert afternoon["total"] == 1 and afternoon["lessons"][0]["start"][11:16] == "18:00"
 
 
@@ -82,7 +86,9 @@ async def test_selected_courses_use_latest_cancel_and_early_class_data(semantic_
     selected = next(x["course_id"] for x in first["courses"] if x["subject"] == "思想道德与法治")
     lesson = next(x for x in lessons(p.store, owner) if x.course_id == selected)
     p.store.change(owner, lesson, {"cancelled": True})
-    result = await p.query_timetable(subject="思政", course_ids=[selected], time_of_day="早八", message_id="question-123", **context)
+    early_catalog = await p.query_timetable(subject="思政", time_of_day="早八", message_id="question-123", **context)
+    result = await p.query_timetable(subject="思政", course_ids=[selected], selection_token=early_catalog["selection_token"],
+                                     message_id="question-123", **context)
     assert result["total"] == 0 and not result["has_early_class"]
     assert not result["daily_summary"][0]["has_early_class"]
 

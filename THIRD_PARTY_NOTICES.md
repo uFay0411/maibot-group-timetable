@@ -15,3 +15,15 @@ share-data conversion and integration. Its public app compatibility profile was
 extracted from the WakeUp 6.1.70 APK provided by that pinned reference repository.
 No APK, private user share code, live timetable data or user/device credentials
 are included in the repository or release package.
+
+# Noto Sans CJK
+
+`assets/NotoSansCJKsc-Regular.otf` is the unmodified Noto Sans CJK SC Regular font
+from [notofonts/noto-cjk](https://github.com/notofonts/noto-cjk), revision
+`f8d157532fbfaeda587e826d4cd5b21a49186f7c`, path
+`Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf`.
+Copyright notices remain in the original font metadata. It is distributed under
+the SIL Open Font License 1.1, included at `licenses/NotoSansCJK-OFL.txt`.
+The font is bundled for Chinese timetable rendering on Windows and Linux.
+
+`examples/timetable-preview.png` uses only synthetic demonstration data.

@@ -41,7 +41,8 @@ def plugin(store):
                                   "full_name": "maibot-team.snowluma-adapter.adapter.snowluma." + operation,
                                   "plugin_id": "maibot-team.snowluma-adapter", "version": "1",
                                   "public": True, "enabled": True}
-                                 for operation in ("message.get_msg", "file.get_group_file_url")
+                                 for operation in ("message.get_msg", "file.get_group_file_url",
+                                                   "group.get_group_member_info", "group.get_group_member_list")
                              ])),
                              send=SimpleNamespace(hybrid=AsyncMock(return_value={"sent": True, "message_id": "m1"}),
                                                   text=AsyncMock()))

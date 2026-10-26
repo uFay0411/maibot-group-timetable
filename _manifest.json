@@ -2,8 +2,8 @@
   "manifest_version": 2,
   "id": "wu.group-timetable",
   "name": "群聊个人课表提醒",
-  "version": "1.7.0",
-  "description": "支持 MaiBot LLM 基于真实课程语义查询、WakeUp 口令与 ICS 导入、自然语言维护个人课表及课前20分钟 reply 提醒",
+  "version": "1.8.0",
+  "description": "支持管理员维护群成员课表、同群群友自然语言语义查询、分页图片、WakeUp与ICS导入及课前20分钟reply提醒",
   "author": {"name": "Wu", "url": "https://github.com/uFay0411"},
   "license": "GPL-3.0-or-later",
   "urls": {
@@ -19,7 +19,8 @@
     {"type": "python_package", "name": "icalendar", "version_spec": ">=6.3,<8"},
     {"type": "python_package", "name": "recurring-ical-events", "version_spec": ">=3.8,<4"},
     {"type": "python_package", "name": "tzdata", "version_spec": ">=2025.1"},
-    {"type": "python_package", "name": "httpx", "version_spec": ">=0.27,<1"}
+    {"type": "python_package", "name": "httpx", "version_spec": ">=0.27,<1"},
+    {"type": "python_package", "name": "Pillow", "version_spec": ">=10,<13"}
   ],
   "capabilities": ["send.text", "send.hybrid", "maisaka.reply.generate", "message.get_by_id", "api.call", "api.list"]
 }

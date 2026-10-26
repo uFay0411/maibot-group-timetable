@@ -1,6 +1,6 @@
 [project]
 name = "maibot-group-timetable"
-version = "1.7.0"
+version = "1.8.0"
 description = "按群成员隔离的 ICS 课表与 MaiBot reply 课前提醒"
 requires-python = ">=3.10"
 dependencies = [
@@ -9,6 +9,7 @@ dependencies = [
   "recurring-ical-events>=3.8,<4",
   "tzdata>=2025.1",
   "httpx>=0.27,<1",
+  "Pillow>=10,<13",
 ]
 
 [project.urls]

@@ -51,7 +51,9 @@ async def test_quote_import_with_host_reply_prefix(plugin):
     plugin.ctx.message.get_by_id.return_value = source
     pattern = next(x for x in TimetablePlugin().get_components() if x["name"] == "timetable")["metadata"]["command_pattern"]
     processed = "[回复了 Alice 的消息: [文件] math.ics]\n/课表 解析"
-    assert re.search(pattern, processed)
+    assert not re.search(pattern, processed)
+    normalized = await plugin.prepare_timetable_command(message=command)
+    assert re.search(pattern, normalized['modified_kwargs']['message']['processed_plain_text'])
     await plugin.command(message=command, text=processed, stream_id="group-stream")
     plugin.ctx.message.get_by_id.assert_awaited_once_with("456", stream_id="group-stream", include_binary_data=True)
     owner = identity(command)[0]

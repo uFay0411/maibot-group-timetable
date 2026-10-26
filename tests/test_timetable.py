@@ -305,6 +305,11 @@ def test_sdk_components_and_manifest():
         ("TOOL", "import_wakeup_timetable"),
         ("TOOL", "import_ics_timetable"),
         ("TOOL", "query_group_current_courses"),
+        ("TOOL", "query_group_upcoming_courses"),
+        ("TOOL", "parse_timetable_input"),
+        ("TOOL", "preview_timetable_batch"),
+        ("TOOL", "confirm_timetable_batch"),
+        ("HOOK_HANDLER", "prepare_timetable_command"),
     }
     manifest = json.loads((Path(__file__).parents[1] / "_manifest.json").read_text(encoding="utf-8"))
     assert "maisaka.reply.generate" in manifest["capabilities"]

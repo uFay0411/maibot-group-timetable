@@ -34,6 +34,10 @@ class Store:
             CREATE TABLE IF NOT EXISTS deliveries (
                 key TEXT PRIMARY KEY, owner TEXT NOT NULL, state TEXT NOT NULL,
                 updated REAL NOT NULL, task_id TEXT NOT NULL DEFAULT '');
+            CREATE TABLE IF NOT EXISTS batch_drafts (
+                token TEXT PRIMARY KEY, actor TEXT NOT NULL, owner TEXT NOT NULL, stream TEXT NOT NULL,
+                message_id TEXT NOT NULL, expires REAL NOT NULL, baseline TEXT NOT NULL,
+                payload TEXT NOT NULL, state TEXT NOT NULL, result TEXT NOT NULL DEFAULT '{}');
             """)
             # 上次进程若停在生成阶段，尚未调用发送接口，可安全恢复。
             db.execute("DELETE FROM deliveries WHERE state='generating'")

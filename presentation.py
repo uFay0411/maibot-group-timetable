@@ -153,13 +153,14 @@ def render_timetable(result: dict, name: str) -> list[bytes]:
 
 
 def render_group_current(result: dict, name: str = "") -> list[bytes]:
-    """保留服务端的下课时间排序，不重新按上课日期/开始时间分组。"""
-    if result.get("query_type") != "group_current" or len(result.get("lessons", [])) > 50:
-        raise ValueError("请使用有效的群内当前上课查询结果生成图片")
+    """保留群内当前/接下来查询的服务端排序，不在渲染时重新分组。"""
+    if result.get("query_type") not in {"group_current","group_upcoming"} or len(result.get("lessons", [])) > 50:
+        raise ValueError("请使用有效的群内课程查询结果生成图片")
     if not FONT_PATH.is_file():
         raise ValueError("课表中文字体缺失，请完整更新插件 assets 目录")
     fonts = {size: ImageFont.truetype(str(FONT_PATH), size) for size in (22, 25, 28, 38)}
     at = datetime.fromisoformat(result["queried_at"])
+    upcoming = result.get("query_type") == "group_upcoming"
     pages, image, draw, y = [], None, None, 0
 
     def new_page():
@@ -167,15 +168,22 @@ def render_group_current(result: dict, name: str = "") -> list[bytes]:
         image = Image.new("RGB", (1080, 2100), "#F1F5F9")
         draw = ImageDraw.Draw(image)
         draw.rounded_rectangle((28, 25, 1052, 215), radius=22, fill="#172B42")
-        draw.text((58, 44), "群内当前正在上课", font=fonts[38], fill="white")
+        draw.text((58, 44), "群友接下来课程" if upcoming else "群内当前正在上课", font=fonts[38], fill="white")
         draw.text((60, 110), f"{at:%Y-%m-%d %H:%M:%S} · {result['timezone']}", font=fonts[22], fill="#CFDFEB")
-        draw.text((60, 152), f"{result['members_in_class']}位群友 · 按下课时间从早到晚", font=fonts[25], fill="#CFDFEB")
-        draw.text((54, 236), "下课 / 开始", font=fonts[22], fill="#586D80")
+        subtitle = (f"{result['members_with_next']}位群友 · 按上课时间排序 · "
+                    f"{result['range_start'][5:10]}至{result['range_end'][5:10]}" if upcoming else
+                    f"{result['members_in_class']}位群友 · 按下课时间从早到晚")
+        draw.text((60, 152), subtitle, font=fonts[25], fill="#CFDFEB")
+        draw.text((54, 236), "上课 / 下课" if upcoming else "下课 / 开始", font=fonts[22], fill="#586D80")
         draw.text((230, 236), "群友 / 科目", font=fonts[22], fill="#586D80")
         draw.text((795, 236), "教室", font=fonts[22], fill="#586D80")
         y = 279
 
     def finish():
+        nonlocal y
+        if upcoming:
+            draw.text((44,y+8),f"范围内无后续课 {result['members_without_upcoming_count']}人；未建课表者未知",font=fonts[22],fill="#586D80")
+            y+=34
         text = (f"按已建立课表统计 {result['members_with_timetable']}/{result['group_member_count']}人"
                 f" · 结果{result['page']}/{result['total_pages']}页 · 图片{len(pages)+1}")
         draw.text((44, y + 16), text, font=fonts[22], fill="#586D80")
@@ -189,14 +197,15 @@ def render_group_current(result: dict, name: str = "") -> list[bytes]:
         titles = wrapped(draw, title, fonts[28], 520)
         rooms = wrapped(draw, row["classroom"] or "教室未填写", fonts[25], 225)
         height = max(128, len(titles) * 42 + 58, len(rooms) * 38 + 22)
-        if y + height > 2018:
+        if y + height > (1984 if upcoming else 2018):
             finish()
             new_page()
         draw.rounded_rectangle((34, y, 1046, y + height - 9), radius=12, fill="white")
         start, end = datetime.fromisoformat(row["start"]), datetime.fromisoformat(row["end"])
-        draw.text((54, y + 10), end.strftime("%H:%M"), font=fonts[28], fill="#256B91")
-        draw.text((54, y + 51), end.strftime("%m-%d") if end.date() != at.date() else "下课", font=fonts[22], fill="#586D80")
-        draw.text((54, y + 84), start.strftime("%H:%M") + "开始", font=fonts[22], fill="#586D80")
+        main_time = start if upcoming else end
+        draw.text((54, y + 10), main_time.strftime("%H:%M"), font=fonts[28], fill="#256B91")
+        draw.text((54, y + 51), main_time.strftime("%m-%d") if upcoming or main_time.date() != at.date() else "下课", font=fonts[22], fill="#586D80")
+        draw.text((54, y + 84), (end.strftime("%H:%M")+"下课") if upcoming else start.strftime("%H:%M")+"开始",font=fonts[22],fill="#586D80")
         display = wrapped(draw, f"{row['member_name']} ({row['user_id']})", fonts[22], 520, 1)[0]
         draw.text((230, y + 8), display, font=fonts[22], fill="#586D80")
         for index, line in enumerate(titles):
@@ -205,7 +214,9 @@ def render_group_current(result: dict, name: str = "") -> list[bytes]:
             draw.text((795, y + 15 + index * 38), line, font=fonts[25], fill="#256B91")
         y += height
     if not result["lessons"]:
-        draw.text((54, y + 20), "已建立课表的群友当前没有正在上的课", font=fonts[28], fill="#586D80")
+        empty = ("本页没有后续课程条目，请查看其他结果页" if upcoming and result['total'] else
+                 "已建立课表的群友在此范围内没有后续课" if upcoming else "已建立课表的群友当前没有正在上的课")
+        draw.text((54, y + 20),empty,font=fonts[28],fill="#586D80")
         y += 104
     finish()
     return pages

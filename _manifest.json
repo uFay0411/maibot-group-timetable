@@ -1,9 +1,10 @@
 {
   "manifest_version": 2,
+  "plugin_type": "tool",
   "id": "wu.group-timetable",
   "name": "群聊个人课表提醒",
-  "version": "1.9.0",
-  "description": "支持群内正在上课汇总并按下课时间排序、管理员代管、LLM群友查询、分页图片及ICS/WakeUp导入与提醒",
+  "version": "1.10.0",
+  "description": "支持文字图片识别课表、批量增删与确认、群友后续课程图片盘点、当前上课汇总、管理员代管及ICS/WakeUp提醒",
   "author": {"name": "Wu", "url": "https://github.com/uFay0411"},
   "license": "GPL-3.0-or-later",
   "urls": {
@@ -22,5 +23,5 @@
     {"type": "python_package", "name": "httpx", "version_spec": ">=0.27,<1"},
     {"type": "python_package", "name": "Pillow", "version_spec": ">=10,<14"}
   ],
-  "capabilities": ["send.text", "send.hybrid", "maisaka.reply.generate", "message.get_by_id", "api.call", "api.list"]
+  "capabilities": ["send.text", "send.hybrid", "maisaka.reply.generate", "message.get_by_id", "api.call", "api.list", "llm.generate", "maisaka.context.resolve_image"]
 }

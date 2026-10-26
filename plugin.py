@@ -30,6 +30,9 @@ from .store import Store
 from .semantic import semantic_query
 from .group_access import MemberChoiceRequired, command_text as group_command_text, list_group_members, owner_parts, require_admin, resolve_member
 from .group_current import format_group_current, group_current as collect_group_current
+from .group_upcoming import format_group_upcoming, group_upcoming as collect_group_upcoming
+from .batch import apply_batch, cancel_batch, format_preview, prepare_batch, read_draft
+from .recognition import recognize
 from .presentation import command_query, format_query, render_group_current, render_timetable
 from .wakeup import fetch_schedule as fetch_wakeup_schedule, to_ics as wakeup_to_ics
 
@@ -56,6 +59,13 @@ HELP = """群聊课表（未指定成员时操作自己在本群的课表）
 /课表 管理 @成员 加课|调课|停课|改课|删课|恢复|解析|wakeup ...
 /课表 图片 [今天|明天|本周|YYYY-MM-DD] [天数1~31]
 /课表 群内当前 [页码] [图片] —— 按下课时间从早到晚列出正在上课的群友
+/课表 群友接下来 [未来7天|明天|YYYY-MM-DD] [天数1~31] [文字] [第N页] —— 默认图片
+/课表 文字导入 [合并|替换] 课表文字（也可引用原消息）
+/课表 图片导入 [合并|替换] 补充说明（带图或引用原图，需学期日期/节次钟点）
+/课表 批量加课 JSON课程数组（date/start_time/end_time/subject/classroom/weeks）
+/课表 批量删课 课程编号1 课程编号2 …（整门课停用）
+/课表 批量停课 课次编号1 课次编号2 …（仅列出的课次）
+/课表 确认 草稿编号   /课表 取消 草稿编号 —— 先预览再统一写入，30分钟有效
 普通群成员可查同群群友课表；代改只允许当前群主/管理员，权限实时校验。
 课程编号/课次编号见查询结果；名称含空格时请用双引号包围。
 调课只影响一个课次。换教室但时间不变时，调课填原日期和时间。"""
@@ -183,7 +193,7 @@ class TimetablePlugin(MaiBotPlugin):
         return await self.target_member(actor, stream, target_member)
 
     async def send_table_images(self, result: dict, target: dict, receipt: str = "") -> int:
-        renderer = render_group_current if result.get("query_type") == "group_current" else render_timetable
+        renderer = render_group_current if result.get("query_type") in {"group_current","group_upcoming"} else render_timetable
         pages = await asyncio.to_thread(renderer, result, target["name"])
         now = monotonic()
         self.image_receipts = {key: expiry for key, expiry in self.image_receipts.items() if expiry > now}
@@ -218,6 +228,147 @@ class TimetablePlugin(MaiBotPlugin):
             result["content"] += " 图片已实际发送到当前群，只需按人设简短说明，不要重复生成图片。"
         result["content"] = model_visible_content(result)
         return result
+
+    async def upcoming_group_result(self, actor: str, stream: str, output_format: str, page: int,
+                                    period: str = "未来7天", days: int = 7, receipt: str = "") -> dict:
+        if output_format not in {"text", "image"}:
+            raise ValueError("输出格式应为text或image")
+        platform, group_id, _ = owner_parts(actor)
+        members = await list_group_members(self.ctx, actor)
+        result = await asyncio.to_thread(collect_group_upcoming, self.store, platform, group_id, stream, members,
+            self.config.timetable.default_timezone, datetime.now(ZoneInfo("UTC")), period, days, page)
+        result["output_format"] = output_format
+        if output_format == "image":
+            target = {"owner": json.dumps([platform, group_id, "*group_upcoming*"], separators=(",", ":")),
+                      "stream": stream, "name": "群友接下来课程"}
+            result["image_pages"] = await self.send_table_images(result, target, receipt)
+            result["image_sent"] = True
+            result["content"] += " 图片已实际发送，只需按人设简短说明。"
+        result["content"] = model_visible_content(result)
+        return result
+
+    @Tool("query_group_upcoming_courses", visibility="visible",
+        description="盘点本群每位群友接下来的下一节课，按开课时间排序，默认实际发送图片。用户问大家接下来有什么课、谁下一节最早时使用。只查当前成员已建课表，正在上的课不算下一节，默认未来7天，可指定日期范围；同一开始时间冲突课全保留。保持返回顺序通过reply说明，不猜无课表者情况。",
+        parameters={
+            "message_id":{"type":"string","required":True,"description":"本次用户请求的真实msg_id"},
+            "period":{"type":"string","default":"未来7天","description":"未来7天/今天/明天/本周/下周/YYYY-MM-DD"},
+            "days":{"type":"integer","minimum":1,"maximum":31,"default":7,"description":"日期起的查询天数；今天/明天固定当天，周范围固定一周"},
+            "page":{"type":"integer","minimum":1,"default":1},
+            "output_format":{"type":"string","enum":["image","text"],"default":"image"}})
+    async def query_group_upcoming_courses(self, message_id="", period="未来7天", days=7, page=1, output_format="image", **context):
+        try:
+            if not self.config.plugin.enabled:
+                raise ValueError("课表插件已关闭")
+            if not message_id:
+                raise ValueError("必须提供本次请求message_id")
+            actor, stream = await self.query_owner(message_id, context)
+            return await self.upcoming_group_result(actor, stream, output_format, page, period, days, actor+message_id)
+        except (ValueError, ZoneInfoNotFoundError) as exc:
+            return self.tool_error(exc)
+
+    async def batch_preview(self, actor: str, target: dict, message_id: str, action: str, **values):
+        if not isinstance(message_id,str) or not message_id.strip():
+            raise ValueError("批量操作必须有真实请求消息编号")
+        async with self.locks[target["owner"]]:
+            await self.writable_member(actor,target,create=action=="加课")
+            return await asyncio.to_thread(prepare_batch,self.store,actor,target,message_id,action,**values)
+
+    async def parse_input(self, actor: str, stream: str, target: dict, message: dict, source_id: str,
+                          mode: str, notes: str):
+        if not isinstance(source_id,str) or len(source_id)>512 or not isinstance(notes,str) or len(notes)>6000:
+            raise ValueError("原消息编号最多512字，补充说明最多6000字")
+        if mode not in {"合并","替换"}:
+            raise ValueError("导入模式为合并或替换")
+        request_id = str(message.get("message_id") or "")
+        if not request_id:
+            raise ValueError("解析课表必须有真实请求消息编号")
+        source_id = source_id or quoted_message_id(message) or request_id
+        if source_id!=request_id:
+            notes=own_text(message)+"\n"+notes
+        source = message if source_id==request_id else await self.ctx.message.get_by_id(source_id,stream_id=stream,include_binary_data=True)
+        if not isinstance(source,dict) or source.get("success") is False:
+            raise ValueError("无法读取课表原消息，请重新带图发送或引用原文")
+        source_owner, source_stream, *_ = identity(source)
+        if source_stream!=stream or source_owner not in {actor,target["owner"]} or str(source.get("message_id"))!=source_id or source.get("is_notify"):
+            raise ValueError("课表原消息必须来自本人或管理目标在当前群的真实消息")
+        async with self.locks[target["owner"]]:
+            await self.writable_member(actor,target,create=True)
+            zone = (await asyncio.to_thread(self.store.get_member,target["owner"]))["zone"]
+        # 识别期间不持有成员锁；仅在后续生成草稿、确认时再次核验身份。
+        courses = await recognize(self.ctx,source,stream,notes=notes,zone=zone,now=datetime.now(ZoneInfo(zone)).isoformat())
+        return await self.batch_preview(actor,target,request_id,"加课",courses=courses,mode=mode)
+
+    @Tool("parse_timetable_input", visibility="visible", timeout_ms=120000,
+        description="从当前用户实际发来的课表文字/图片或引用原文识别多门课程并生成待确认预览，不能直接写入。用户说把这张图/这段文字导入课表时使用。source_message_id可填原图原文msg_id，默认引用消息或当前消息；只能读取本群本人或管理目标的真实消息。notes补充用户给出的学期第一周周一日期、节次钟点、周次，不能猜。缺失信息会报需补充。识别后必须展示条目，请用户在新消息确认；不可同一次请求自动确认。默认合并，替换必须用户明确要求。代导入须当前群主/管理员。",
+        parameters={"message_id":{"type":"string","required":True},"source_message_id":{"type":"string","default":""},
+            "target_member":{"type":"string","default":""},"notes":{"type":"string","default":""},
+            "mode":{"type":"string","enum":["合并","替换"],"default":"合并"}})
+    async def parse_timetable_input(self, message_id="", source_message_id="", target_member="", notes="", mode="合并", **context):
+        try:
+            if not self.config.plugin.enabled or not message_id:
+                raise ValueError("插件已关闭或缺少本次用户消息编号")
+            actor,stream = await self.query_owner(message_id,context)
+            message = await self.ctx.message.get_by_id(message_id,stream_id=stream,include_binary_data=True)
+            if not isinstance(message,dict) or identity(message)[0]!=actor or identity(message)[1]!=stream or str(message.get("message_id"))!=message_id:
+                raise ValueError("本次请求消息身份不一致")
+            target = await self.operation_target(actor,stream,message_id,target_member)
+            return self.result_context(await self.parse_input(actor,stream,target,message,source_message_id,mode,notes),target)
+        except (ValueError, ZoneInfoNotFoundError) as exc:
+            return self.tool_error(exc)
+
+    @Tool("preview_timetable_batch", visibility="visible",
+        description="批量加课、整门删课或单次停课，先验证整批并生成预览，尚不写入。加课courses每项需真实date/start_time/end_time/subject，可填classroom和每周连续weeks；不连续周次展开多条。批量删课先查询目标课程得到course_ids，影响所有周；批量停课先查询得到lesson_ids，只影响列出的课次。目标不明或编号不明先询问/查询，不能编造。展示完整预览并等待用户在新消息明确确认后调用confirm_timetable_batch。代改实时核验当前群管理身份。图片文字导入优先parse_timetable_input。",
+        parameters={"message_id":{"type":"string","required":True},"target_member":{"type":"string","default":""},
+            "action":{"type":"string","enum":["加课","删课","停课"],"required":True},
+            "courses":{"type":"array","items":{"type":"object","properties":{
+                "date":{"type":"string"},"start_time":{"type":"string"},"end_time":{"type":"string"},
+                "subject":{"type":"string"},"classroom":{"type":"string"},"weeks":{"type":"integer"}},
+                "required":["date","start_time","end_time","subject"]}},
+            "course_ids":{"type":"array","items":{"type":"string"}},"lesson_ids":{"type":"array","items":{"type":"string"}}})
+    async def preview_timetable_batch(self, message_id="", target_member="", action="", courses=None, course_ids=None, lesson_ids=None, **context):
+        try:
+            if not self.config.plugin.enabled or not message_id:
+                raise ValueError("插件已关闭或缺少本次用户消息编号")
+            actor,stream = await self.query_owner(message_id,context)
+            target = await self.operation_target(actor,stream,message_id,target_member)
+            result = await self.batch_preview(actor,target,message_id,action,courses=courses,course_ids=course_ids,lesson_ids=lesson_ids)
+            return self.result_context(result,target)
+        except (ValueError, ZoneInfoNotFoundError) as exc:
+            return self.tool_error(exc)
+
+    async def confirm_batch(self, actor: str, stream: str, message: dict, token: str, action: str):
+        draft = await asyncio.to_thread(read_draft,self.store,token,actor,stream)
+        if action == "取消":
+            return await asyncio.to_thread(cancel_batch,self.store,token,actor,stream)
+        if action != "确认":
+            raise ValueError("操作仅支持确认或取消")
+        confirmation = own_text(message).removeprefix("/课表").strip()
+        if not re.match(r"^(?:请)?(?:确认|确定)(?:保存|导入|批量|添加|删除|执行|加课|删课|这|刚才|[\s，,。]|$)",confirmation) or re.search(r"不(?:要|用|能|再)?确认|取消|别(?:导入|保存|执行|删|加)|暂不|先不|不要|不用|但是|不过|改成|改为|换成|再加|再删|除外|去掉",confirmation):
+            raise ValueError("需要用户在新消息明确说‘确认保存’或发送 /课表 确认 草稿编号；未修改课表")
+        uid=json.loads(draft["owner"])[2]
+        target=await self.target_member(actor,stream,uid)
+        if target["owner"]!=draft["owner"]:
+            raise ValueError("草稿目标与当前群身份不一致")
+        async with self.locks[target["owner"]]:
+            await self.writable_member(actor,target)
+            result=await asyncio.to_thread(apply_batch,self.store,token,actor,stream,str(message.get("message_id") or ""))
+        return self.result_context(result,target,admin_operation=not target["is_self"])
+
+    @Tool("confirm_timetable_batch", visibility="visible",
+        description="用户在新的消息明确确认/取消刚才预览的批量课表草稿后调用。draft_token必须用预览真实返回值，message_id必须是这条新的确认消息，不能用生成预览的消息。后端核对确认原文、提问者、群、目标当前权限和课表版本；不匹配整批拒绝，成功事务一次性完成，重试不重复加课。用户修改了预览内容须重新预览，不能直接确认旧稿。",
+        parameters={"message_id":{"type":"string","required":True},"draft_token":{"type":"string","required":True},
+                    "action":{"type":"string","enum":["确认","取消"],"default":"确认"}})
+    async def confirm_timetable_batch(self, message_id="", draft_token="", action="确认", **context):
+        try:
+            if not self.config.plugin.enabled or not message_id:
+                raise ValueError("插件已关闭或缺少本次用户消息编号")
+            actor,stream=await self.query_owner(message_id,context)
+            message=await self.ctx.message.get_by_id(message_id,stream_id=stream,include_binary_data=False)
+            if not isinstance(message,dict) or identity(message)[0]!=actor or identity(message)[1]!=stream or str(message.get("message_id"))!=message_id:
+                raise ValueError("确认消息与请求身份不一致")
+            return await self.confirm_batch(actor,stream,message,draft_token,action)
+        except (ValueError, ZoneInfoNotFoundError) as exc:
+            return self.tool_error(exc)
 
     @Tool(
         "query_group_current_courses",
@@ -637,6 +788,26 @@ class TimetablePlugin(MaiBotPlugin):
         return f"已从引用文件 {files[0]['name']} {mode}解析 {count} 门课程，跳过 {skipped} 个全天事项。"
 
     async def dispatch_body(self, owner: str, message: dict, body: str, target: dict, actor: str, read_only=False):
+        parsed_input = re.fullmatch(r"(?:文字导入|图片导入|文字解析|图片解析)(?:\s+(合并|替换))?(?:\s+([\s\S]*))?",body)
+        batch = re.fullmatch(r"批量(加课|删课|停课)(?:\s+([\s\S]*))?",body)
+        if parsed_input or batch:
+            if read_only:
+                raise ValueError("群友查询指令只读，批量维护请使用个人或管理指令")
+            if parsed_input:
+                result=await self.parse_input(actor,target["stream"],target,message,"",parsed_input.group(1) or "合并",parsed_input.group(2) or "")
+            else:
+                action,raw=batch.group(1),batch.group(2) or ""
+                values={}
+                if action=="加课":
+                    try:
+                        values["courses"]=json.loads(raw)
+                    except ValueError as exc:
+                        raise ValueError("批量加课请提供JSON课程数组；普通课表文字请用 /课表 文字导入") from exc
+                else:
+                    values["course_ids" if action=="删课" else "lesson_ids"]=[x for x in re.split(r"[\s,，]+",raw.strip()) if x]
+                # command 已持有目标锁，这里直接调用同步准备，不重复获取同一把锁。
+                result=await asyncio.to_thread(prepare_batch,self.store,actor,target,str(message.get("message_id") or ""),action,**values)
+            return format_preview(result)
         # 完整分享文案可能有引号、换行，不经过 shlex。
         wakeup = re.match(r"^(?:wakeup|口令|导入口令)(?:\s+([\s\S]*))?$", body, flags=re.IGNORECASE)
         if wakeup:
@@ -676,11 +847,36 @@ class TimetablePlugin(MaiBotPlugin):
         result = await asyncio.to_thread(self.execute, owner, args)
         return f"{target['name']}的课表\n{result}" if not target["is_self"] else result
 
-    @Command("timetable", description="维护自己的群聊课表", pattern=r"(?:^|[\s\]])/课表(?:\s+(?P<args>[\s\S]*))?$")
+    async def send_command_output(self, text: str, stream: str):
+        # 完整保留长预览，按段发送，避免大批量课程超出平台单消息长度。
+        chunks, current = [], ""
+        for line in text.splitlines(keepends=True):
+            if len(current)+len(line)>4500 and current:
+                chunks.append(current)
+                current=""
+            while len(line)>4500:
+                chunks.append(line[:4500])
+                line=line[4500:]
+            current+=line
+        if current:
+            chunks.append(current)
+        for chunk in chunks:
+            await self.ctx.send.text(chunk,stream)
+
+    @HookHandler("chat.receive.after_process",name="prepare_timetable_command",mode=HookMode.BLOCKING,timeout_ms=3000)
+    async def prepare_timetable_command(self,message=None,**kwargs):
+        # 只规范当前发送者真正以 /课表 开头的正文，保留原始引用/图片用于后续校验。
+        # Host 仍负责正常的命令启用与权限检查，不在 Hook 直接执行命令。
+        if not self.config.plugin.enabled or not isinstance(message,dict) or "raw_message" not in message:
+            return {}
+        if re.fullmatch(r"/课表(?:\s+[\s\S]*)?",own_text(message)) is None:
+            return {}
+        return {"modified_kwargs":{"message":{**message,"processed_plain_text":group_command_text(message)}}}
+
+    @Command("timetable", description="维护自己的群聊课表", pattern=r"^/课表(?:\s+(?P<args>[\s\S]*))?$", timeout_ms=120000)
     async def command(self, message=None, text="", **kwargs):
         message = message if isinstance(message, dict) else {}
-        # Host 的 processed_plain_text 会在指令前拼接引用摘要。
-        # 命令匹配允许摘要前缀，执行时只解析当前消息的 text 段，避免执行引用里的指令。
+        # 执行时再次校验当前消息正文，禁止摘要、转发或句子中嵌入的指令触发。
         command_text = own_text(message, text)
         if re.fullmatch(r"/课表(?:\s+[\s\S]*)?", command_text) is None:
             return False, None, False
@@ -690,6 +886,25 @@ class TimetablePlugin(MaiBotPlugin):
         try:
             actor, stream = await self.register_member(message)
             body = group_command_text(message, text).removeprefix("/课表").strip()
+            confirm = re.fullmatch(r"(确认|取消)\s+(\S+)",body)
+            if confirm:
+                found=await self.confirm_batch(actor,stream,message,confirm.group(2),confirm.group(1))
+                await self.ctx.send.text("草稿已取消，未修改课表。" if found['status']=='cancelled' else
+                    f"已{'处理过，无需重复执行' if found.get('already_applied') else '统一保存'}：{found['target_member']['name']} · {found['action']} {found['count']}条。",stream)
+                return True,None,True
+            upcoming = re.fullmatch(r"(?:群友接下来|群内接下来)(?:\s+([\s\S]*))?",body)
+            if upcoming:
+                args=shlex.split(upcoming.group(1) or "")
+                image="文字" not in args
+                page_values=[x for x in args if re.fullmatch(r"第\d+页",x)]
+                values=[x for x in args if x not in {"文字","图片"} and x not in page_values]
+                if len(page_values)>1 or len(values)>2 or (len(values)==2 and not values[1].isdigit()):
+                    raise ValueError("用法：/课表 群友接下来 [未来7天|明天|日期] [天数1~31] [文字] [第N页]")
+                found=await self.upcoming_group_result(actor,stream,"image" if image else "text",
+                    int(page_values[0][1:-1]) if page_values else 1,values[0] if values else "未来7天",int(values[1]) if len(values)==2 else 7)
+                if not image:
+                    await self.ctx.send.text(format_group_upcoming(found),stream)
+                return True,None,True
             current = re.fullmatch(r"(?:群内当前|群内\s+当前)(?:\s+([\s\S]*))?", body)
             if current:
                 values = shlex.split(current.group(1) or "")
@@ -705,13 +920,23 @@ class TimetablePlugin(MaiBotPlugin):
             target = await self.target_member(actor, stream, shlex.split(prefix.group(2))[0] if prefix else "")
             if prefix:
                 body = (prefix.group(3) or "今天").strip()
+            # 识别可能调用模型、预览会自行加锁，避免 command 外层锁嵌套导致死锁。
+            input_action = re.match(r"^(?:文字导入|图片导入|文字解析|图片解析)(?:\s|$)",body)
+            if input_action:
+                if prefix and prefix.group(1)=="群友":
+                    raise ValueError("群友查询指令只读；代导入请使用管理指令")
+                if prefix and prefix.group(1)=="管理" and target["is_self"]:
+                    await require_admin(self.ctx,actor)
+                result=await self.dispatch_body(target["owner"],message,body,target,actor)
+                await self.send_command_output(result,stream)
+                return True,None,True
             async with self.locks[target["owner"]]:
                 if prefix and prefix.group(1) == "管理":
                     first_action = body.split(maxsplit=1)[0].lower()
                     # 管理指令即使目标是本人，也要求群管理身份，避免与个人指令混淆。
                     if target["is_self"]:
                         await require_admin(self.ctx, actor)
-                    await self.writable_member(actor, target, create=first_action in {"加课", "解析", "wakeup", "口令", "导入口令"})
+                    await self.writable_member(actor, target, create=first_action in {"加课", "解析", "wakeup", "口令", "导入口令", "批量加课"})
                 elif prefix:
                     try:
                         member = await asyncio.to_thread(self.store.get_member, target["owner"])
@@ -729,7 +954,7 @@ class TimetablePlugin(MaiBotPlugin):
             self.ctx.logger.exception("课表指令执行失败")
             result = "课表操作失败，请检查插件日志中的消息查询或文件下载错误。"
         if stream and result is not None:
-            await self.ctx.send.text(result, stream)
+            await self.send_command_output(result, stream)
         return True, None, True
 
     def execute(self, owner: str, args: list[str]) -> str:

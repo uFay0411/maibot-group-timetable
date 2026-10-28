@@ -15,6 +15,47 @@ from .calendar_engine import Lesson, parse_calendar, stamp
 from .query import date_window, model_visible_content
 from .store import Store
 from .matching import subject_matches
+from .semantic import semantic_query
+
+
+def management_candidates(store: Store, owner: str, action: str, subject: str, period: str,
+                          catalog_offset: int = 0) -> dict[str, Any]:
+    """维护目标只从真实课表读取，简称交由 Planner 语义选择；本阶段绝不写课表。"""
+    if not isinstance(subject, str) or not subject.strip() or len(subject) > 100:
+        raise ValueError("请提供要维护的原课程说法 match_subject，如高数、思政；不能猜测目标")
+    if type(catalog_offset) is not int or catalog_offset < 0:
+        raise ValueError("catalog_offset必须为候选返回的非负整数")
+    if action in {"调课", "停课"}:
+        result = semantic_query(store, owner, period, 1, subject, "全天", catalog_offset=catalog_offset)
+        result.update(requires_target_selection=True, write_performed=False, action=action)
+        result["content"] = ("尚未修改课表。请依据真实科目候选语义匹配用户原话，不要硬套简称或猜编号。"
+                             "回传selection_token，调用query_timetable并传course_ids读取实际课次；"
+                             "按原日期确定唯一课次，多个匹配时先询问用户。然后调用manage_timetable，"
+                             "保留原调课参数并填lesson_id及selection_token；空列表不代表已停课。")
+    elif action in {"改课", "删课", "恢复"}:
+        # 恢复还须显示被停用课程；按原词过滤会再次漏掉“思政”等语义简称。
+        courses = store.course_details(owner)
+        if action != "恢复":
+            courses = [course for course in courses if not course["deleted"]]
+        if catalog_offset and catalog_offset >= len(courses):
+            raise ValueError("候选页超出范围，请从0重新读取")
+        page = courses[catalog_offset:catalog_offset + 100]
+        has_more = catalog_offset + len(page) < len(courses)
+        result = {"success": True, "action": action, "subject": subject, "courses": page,
+                  "total": len(courses), "has_more": has_more,
+                  "next_catalog_offset": catalog_offset + len(page) if has_more else None,
+                  "requires_target_selection": True, "write_performed": False,
+                  "content": ("尚未修改课表。请从真实courses按语义选择用户指的那一门，读取完后续页；"
+                              "多门均可能时先询问，不能任选或一次修改全部。已停用课程也可恢复。"
+                              "再调用manage_timetable，填写course_id并原样回传selection_token和原修改参数。"
+                              "恢复撤销该整门课所有本地修改及停课，只在用户明确要求该范围时执行。")}
+        if not courses:
+            result["requires_target_selection"] = False
+            result["content"] = "没有可用于本次操作的课程，未修改课表。请如实说明，不能编造课程编号或声称已完成维护。"
+    else:
+        raise ValueError("只有调课、停课、改课、删课、恢复需要寻找原课程")
+    result["content"] = model_visible_content(result)
+    return result
 
 
 def lesson_data(lesson: Lesson) -> dict[str, Any]:
@@ -57,9 +98,11 @@ def target_day(value: str, now: datetime):
 def manage_schedule(store: Store, owner: str, action: str, *, message_id: str, lesson_id: str = "",
                     course_id: str = "", date: str = "", start_time: str = "", end_time: str = "",
                     subject: str = "", classroom: str = "", weeks: int = 1,
-                    now: datetime | None = None, confirm_clear: bool = False) -> dict[str, Any]:
+                    now: datetime | None = None, confirm_clear: bool = False,
+                    reminder_enabled: bool | None = None, timezone: str = "") -> dict[str, Any]:
     fields = {"action": action, "message_id": message_id, "lesson_id": lesson_id, "course_id": course_id,
-              "date": date, "start_time": start_time, "end_time": end_time, "subject": subject, "classroom": classroom}
+              "date": date, "start_time": start_time, "end_time": end_time, "subject": subject, "classroom": classroom,
+              "timezone": timezone}
     if any(not isinstance(value, str) or len(value) > 512 for value in fields.values()):
         raise ValueError("维护参数必须是长度不超过512的文本")
     if any(value and not value.strip() for value in fields.values()):
@@ -72,9 +115,14 @@ def manage_schedule(store: Store, owner: str, action: str, *, message_id: str, l
     allowed = {"加课": {"date", "start_time", "end_time", "subject", "classroom"},
                "调课": {"lesson_id", "date", "start_time", "end_time", "classroom"},
                "停课": {"lesson_id"}, "改课": {"course_id", "subject", "classroom"},
-               "删课": {"course_id"}, "恢复": {"course_id"}, "课程列表": {"subject"}, "清空": set()}
+               "删课": {"course_id"}, "恢复": {"course_id"}, "课程列表": {"subject"}, "清空": set(),
+               "提醒": set(), "状态": set(), "时区": {"timezone"}}
     if action not in allowed:
-        raise ValueError("操作请使用 加课、调课、停课、改课、删课、恢复、课程列表、清空")
+        raise ValueError("操作请使用 加课、调课、停课、改课、删课、恢复、课程列表、清空、提醒、状态、时区")
+    if reminder_enabled is not None and (action != "提醒" or type(reminder_enabled) is not bool):
+        raise ValueError("reminder_enabled只用于提醒开关，必须是布尔值")
+    if action == "提醒" and type(reminder_enabled) is not bool:
+        raise ValueError("开关提醒必须按用户原话填写reminder_enabled=true或false")
     if type(confirm_clear) is not bool or (confirm_clear and action != "清空"):
         raise ValueError("confirm_clear 只用于清空课表，必须是布尔值")
     if action == "清空" and not confirm_clear:
@@ -86,7 +134,24 @@ def manage_schedule(store: Store, owner: str, action: str, *, message_id: str, l
     zone = ZoneInfo(store.get_member(owner)["zone"])
     now = now.astimezone(zone) if now is not None else datetime.now(zone)
     result = {"success": True, "action": action, "timezone": str(zone)}
-    if action == "清空":
+    if action in {"提醒", "状态", "时区"}:
+        before = store.get_member(owner)
+        if action == "提醒":
+            store.setting(owner, "enabled", int(reminder_enabled))
+        elif action == "时区":
+            if not timezone:
+                raise ValueError("请提供明确的IANA时区，如Asia/Shanghai")
+            ZoneInfo(timezone)  # 先校验，失败不改原设置。
+            store.setting(owner, "zone", timezone)
+        after = store.get_member(owner)
+        result.update(scope="group_settings", write_performed=action != "状态",
+                      before={"reminder_enabled": bool(before["enabled"]), "timezone": before["zone"]},
+                      after={"reminder_enabled": bool(after["enabled"]), "timezone": after["zone"]},
+                      timezone=after["zone"], deliveries=store.delivery_status(owner),
+                      content="这是该成员当前群的真实课表设置和提醒记录。开关提醒不删除课程，状态为只读。"
+                      "已导入课程保持真实时刻；时区只改变显示和后续浮动时间解析，不会整体平移已导入课程。"
+                      "请通过reply自然说明实际结果，其他群设置不受影响。")
+    elif action == "清空":
         count = len(store.course_details(owner))
         store.clear(owner)
         result.update(scope="whole_timetable", removed_courses=count,

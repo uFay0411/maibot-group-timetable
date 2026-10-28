@@ -38,13 +38,6 @@ class Store:
                 token TEXT PRIMARY KEY, actor TEXT NOT NULL, owner TEXT NOT NULL, stream TEXT NOT NULL,
                 message_id TEXT NOT NULL, expires REAL NOT NULL, baseline TEXT NOT NULL,
                 payload TEXT NOT NULL, state TEXT NOT NULL, result TEXT NOT NULL DEFAULT '{}');
-            CREATE TABLE IF NOT EXISTS personal_settings (
-                platform TEXT NOT NULL, user TEXT NOT NULL, reminder_mode TEXT NOT NULL DEFAULT 'group',
-                PRIMARY KEY(platform,user));
-            CREATE TABLE IF NOT EXISTS private_scopes (
-                actor TEXT PRIMARY KEY, source_owner TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS delivery_aliases (
-                alias TEXT PRIMARY KEY, delivery_key TEXT NOT NULL);
             """)
             # 上次进程若停在生成阶段，尚未调用发送接口，可安全恢复。
             db.execute("DELETE FROM deliveries WHERE state='generating'")
@@ -82,57 +75,6 @@ class Store:
             if isinstance(owner, list) and len(owner) == 3 and owner == [platform, group_id, row["user"]]:
                 result.append(row)
         return result
-
-    def user_members(self,platform: str,user: str) -> List[dict]:
-        with self.connect() as db:
-            rows=[dict(r) for r in db.execute("SELECT * FROM members WHERE user=? ORDER BY owner",(user,))]
-        result=[]
-        for row in rows:
-            try:
-                parts=json.loads(row['owner'])
-            except (TypeError,ValueError):
-                continue
-            if isinstance(parts,list) and len(parts)==3 and parts[0]==platform and parts[2]==user:
-                result.append(row)
-        return result
-
-    def reminder_mode(self,platform: str,user: str) -> str:
-        with self.connect() as db:
-            row=db.execute("SELECT reminder_mode FROM personal_settings WHERE platform=? AND user=?",(platform,user)).fetchone()
-        return ('off' if row[0]=='private' else row[0]) if row else 'group'
-
-    def set_reminder_mode(self,platform: str,user: str,mode: str):
-        if mode not in {'group','off'}:
-            raise ValueError('提醒方式必须为群聊或关闭；私聊提醒已移除')
-        with self.connect() as db:
-            db.execute("INSERT INTO personal_settings VALUES(?,?,?) ON CONFLICT(platform,user) DO UPDATE SET reminder_mode=excluded.reminder_mode",(platform,user,mode))
-
-    def private_scope(self,actor: str) -> str:
-        with self.connect() as db:
-            row=db.execute("SELECT source_owner FROM private_scopes WHERE actor=?",(actor,)).fetchone()
-        return row[0] if row else ''
-
-    def set_private_scope(self,actor: str,owner: str):
-        with self.connect() as db:
-            if not owner:
-                db.execute("DELETE FROM private_scopes WHERE actor=?",(actor,))
-            else:
-                db.execute("INSERT OR REPLACE INTO private_scopes VALUES(?,?)",(actor,owner))
-
-    def claim_once(self,key: str,owner: str,now: float,legacy_keys: List[str],aliases: List[str] | None = None) -> bool:
-        with self.connect() as db:
-            db.execute("BEGIN IMMEDIATE")
-            for old in legacy_keys:
-                if db.execute("SELECT 1 FROM deliveries WHERE key=?",(old,)).fetchone():
-                    return False
-            for alias in aliases or []:
-                if db.execute("SELECT 1 FROM delivery_aliases a JOIN deliveries d ON d.key=a.delivery_key WHERE a.alias=?",(alias,)).fetchone():
-                    return False
-            claimed=db.execute("INSERT OR IGNORE INTO deliveries VALUES(?,?, 'generating',?,'')",(key,owner,now)).rowcount==1
-            if claimed:
-                for alias in aliases or []:
-                    db.execute("INSERT OR REPLACE INTO delivery_aliases VALUES(?,?)",(alias,key))
-            return claimed
 
     def setting(self, owner: str, field: str, value):
         if field not in {"zone", "enabled"}:
@@ -291,9 +233,7 @@ class Store:
 
     def release(self, key: str):
         with self.connect() as db:
-            changed=db.execute("DELETE FROM deliveries WHERE key=? AND state IN ('generating','pending')", (key,)).rowcount
-            if changed:
-                db.execute("DELETE FROM delivery_aliases WHERE delivery_key=?",(key,))
+            db.execute("DELETE FROM deliveries WHERE key=? AND state IN ('generating','pending')", (key,))
 
     def delivery_status(self, owner: str) -> dict:
         with self.connect() as db:

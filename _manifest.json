@@ -3,8 +3,8 @@
   "plugin_type": "tool",
   "id": "wu.group-timetable",
   "name": "群聊个人课表提醒",
-  "version": "1.11.1",
-  "description": "支持私聊管理、多群实时合并与群提醒去重、MaiBot管理员代管、群友上课中/下一节课图片盘点及ICS/文字图片导入",
+  "version": "1.10.4",
+  "description": "兼容QQ官方OpenID的群课表汇总，保留1.10.3自然语言管理及群聊稳定版提醒",
   "author": {
     "name": "Wu",
     "url": "https://github.com/uFay0411"

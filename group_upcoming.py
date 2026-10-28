@@ -107,6 +107,9 @@ def format_group_upcoming(result: dict) -> str:
         f"范围：{result['range_start']} 至 {result['range_end']}（不含）",
         f"已建立课表{result['members_with_timetable']}/{result['group_member_count']}人；{result['members_with_next']}人有后续课程。",
     ]
+    if result.get("roster_verified") is False:
+        lines[2] = f"本群已建立课表{result['members_with_timetable']}人；{result['members_with_next']}人有后续课程。"
+        lines.append(result["roster_note"])
     for row in result["lessons"]:
         start, end = datetime.fromisoformat(row["start"]), datetime.fromisoformat(row["end"])
         ending = end.strftime("%H:%M" if end.date() == start.date() else "%m-%d %H:%M")

@@ -3,8 +3,8 @@
   "plugin_type": "tool",
   "id": "wu.group-timetable",
   "name": "群聊个人课表提醒",
-  "version": "1.10.5",
-  "description": "修复QQ官方带图课表导入，帮助与版本更新日志图片输出；保留自然语言管理与群提醒",
+  "version": "1.10.6",
+  "description": "为课表与帮助图片补足上传等待时间；保留官方QQ原图导入和自然语言课表管理",
   "author": {
     "name": "Wu",
     "url": "https://github.com/uFay0411"

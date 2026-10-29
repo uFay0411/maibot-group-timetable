@@ -1,0 +1,50 @@
+--- a/plugin.py
++++ b/plugin.py
+@@ -13,7 +13,7 @@
+ import re
+ import time
+ 
+-from aiohttp import ClientError, ClientSession, ClientTimeout, ClientWebSocketResponse, WSMsgType
++from aiohttp import ClientConnectionError, ClientError, ClientPayloadError, ClientSession, ClientTimeout, ClientWebSocketResponse, WSMsgType
+ from maibot_sdk import MaiBotPlugin, MessageGateway, PluginConfigBase, Tool
+ from maibot_sdk.types import ToolParameterInfo, ToolParamType
+ 
+@@ -1016,9 +1016,7 @@
+             if not chunk:
+                 raise RuntimeError(f"QQ 图片分片 {index} 超出文件范围")
+             # 预签名 URL 自带鉴权，不能携带 QQBot Authorization 头。
+-            async with session.put(presigned_url, data=chunk) as response:
+-                if response.status >= 400:
+-                    raise RuntimeError(f"QQ 图片分片 {index} 上传失败: HTTP {response.status}")
++            await self._put_image_part(session, presigned_url, chunk, index)
+             await self._api_post(
+                 f"{base_path}/upload_part_finish",
+                 {
+@@ -1037,6 +1035,27 @@
+             raise RuntimeError("QQ 图片上传响应缺少 file_info")
+         return file_info
+ 
++    async def _put_image_part(self, session: ClientSession, url: str, chunk: bytes, index: int) -> None:
++        """PUT同一预签名分片可安全重传；不重放群消息POST，不记录带签名的URL。"""
++        for attempt in range(3):
++            try:
++                async with session.put(url, data=chunk, timeout=ClientTimeout(total=12, connect=5)) as response:
++                    if response.status >= 400:
++                        raise RuntimeError(f"QQ 图片分片 {index} 上传失败: HTTP {response.status}")
++                    # 完整读取响应后才确认该分片；响应中途断开时仍可安全重传相同字节。
++                    await response.read()
++                return
++            except (ClientConnectionError, ClientPayloadError, asyncio.TimeoutError) as exc:
++                if attempt == 2:
++                    raise RuntimeError(f"QQ 图片分片 {index} 上传连接失败，已尝试3次（{type(exc).__name__}）") from exc
++                connector = session.connector
++                if connector is not None:
++                    host = urlsplit(url)
++                    connector.clear_dns_cache(host.hostname, host.port or 443)
++                self.ctx.logger.warning("QQ 图片分片上传连接中断，刷新DNS重试: part=%s attempt=%s error=%s",
++                                        index, attempt+1, type(exc).__name__)
++                await asyncio.sleep(0.5 * (attempt+1))
++
+ 
+ def create_plugin() -> QQOfficialAdapterPlugin:
+     return QQOfficialAdapterPlugin()

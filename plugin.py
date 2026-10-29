@@ -208,7 +208,7 @@ class TimetablePlugin(MaiBotPlugin):
             if receipt and key in self.image_receipts:
                 continue
             sent = await self.ctx.send.hybrid([{"type": "image", "content": base64.b64encode(page).decode()}],
-                                               target["stream"], return_details=True)
+                                               target["stream"], return_details=True, timeout_ms=120000)
             if not isinstance(sent, dict) or sent.get("sent") is not True:
                 raise ValueError(f"课表图片第{index + 1}页发送未成功，请稍后重试")
             if receipt:
@@ -255,7 +255,7 @@ class TimetablePlugin(MaiBotPlugin):
         result["content"] = model_visible_content(result)
         return result
 
-    @Tool("query_group_upcoming_courses", visibility="visible",
+    @Tool("query_group_upcoming_courses", visibility="visible", timeout_ms=180000,
         description="盘点本群每位群友接下来的下一节课，按开课时间排序，默认实际发送图片。用户问大家接下来有什么课、谁下一节最早时使用。只查当前成员已建课表，正在上的课不算下一节，默认未来7天，可指定日期范围；同一开始时间冲突课全保留。保持返回顺序通过reply说明，不猜无课表者情况。",
         parameters={
             "message_id":{"type":"string","required":True,"description":"本次用户请求的真实msg_id"},
@@ -395,6 +395,7 @@ class TimetablePlugin(MaiBotPlugin):
 
     @Tool(
         "query_group_current_courses",
+        timeout_ms=180000,
         description=("查询本群各群友按课表当前正在上的课，并按下课时间从早到晚排序。"
                      "用户问‘群里谁在上课’、‘大家现在都在上什么’、‘谁最早下课’、‘按下课时间排一下’时使用，"
                      "无需逐个查询成员。message_id是本次提问消息msg_id，群号和当前时刻由后端确定，不接受模型指定。"
@@ -489,6 +490,7 @@ class TimetablePlugin(MaiBotPlugin):
 
     @Tool(
         "query_timetable",
+        timeout_ms=180000,
         description=("查询当前群聊中自己或指定群友的真实课程表。target_member 留空查自己，指定@、QQ号或群名片查本群群友，"
                      "若用户问群内所有人现在正在上什么课、按下课时间排序，请使用query_group_current_courses。"
                      "不要把提问者 message_id 换成目标成员的消息。可问‘小明明天有什么课’、‘把他的本周课表发成图片’。"
@@ -935,7 +937,7 @@ class TimetablePlugin(MaiBotPlugin):
             return {}
         return {"modified_kwargs":{"message":{**message,"processed_plain_text":group_command_text(message)}}}
 
-    @Command("timetable", description="维护自己的群聊课表", pattern=r"^/课表(?:\s+(?P<args>[\s\S]*))?$", timeout_ms=120000)
+    @Command("timetable", description="维护自己的群聊课表", pattern=r"^/课表(?:\s+(?P<args>[\s\S]*))?$", timeout_ms=300000)
     async def command(self, message=None, text="", **kwargs):
         message = message if isinstance(message, dict) else {}
         # 执行时再次校验当前消息正文，禁止摘要、转发或句子中嵌入的指令触发。
@@ -955,7 +957,7 @@ class TimetablePlugin(MaiBotPlugin):
                     pages = await asyncio.to_thread(render_info, title, content)
                     for page in pages:
                         sent = await self.ctx.send.hybrid([{"type": "image", "content": base64.b64encode(page).decode()}],
-                                                          stream, return_details=True)
+                                                          stream, return_details=True, timeout_ms=120000)
                         if not isinstance(sent, dict) or sent.get("sent") is not True:
                             raise ValueError("帮助/版本图片发送未成功，请改用对应指令加“文字”重试")
                 else:

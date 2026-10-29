@@ -18,7 +18,7 @@ FILES = (
     "tests/test_reply_latency.py", "tests/test_query.py", "tests/test_semantic.py", "tests/test_matching.py", "tests/test_imports.py",
     "tests/test_image_import_info.py", "tests/test_official_group.py", "tests/test_management.py", "tests/test_natural_management.py", "tests/test_wakeup.py", "tests/test_group_images.py", "tests/test_group_current.py",
     "tests/test_batch_input.py", "tests/test_group_upcoming.py",
-    "licenses/WakeUpDecoder-APACHE-2.0.txt", "THIRD_PARTY_NOTICES.md", "scripts/build_release.py",
+    "patches/qq-official-adapter-upload-retry.patch", "licenses/WakeUpDecoder-APACHE-2.0.txt", "THIRD_PARTY_NOTICES.md", "scripts/build_release.py",
 )
 
 

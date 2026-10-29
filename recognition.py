@@ -76,7 +76,9 @@ async def recognize(ctx, source: dict, stream: str, *, notes: str, zone: str, no
         if not value:
             result = await ctx.maisaka.context.resolve_image(stream, str(source["message_id"]), index=index)
             if not isinstance(result, dict) or result.get("success") is not True:
-                raise ValueError("无法读取原始课表图片；请引用清晰原图重试，并检查maisaka.context.resolve_image权限")
+                error = safe_api_error(result.get("error") if isinstance(result, dict) else "原图返回格式无效")
+                raise ValueError("无法读取原始课表图片：" + error +
+                                 "。请把原图与 /课表 图片导入 放在同一条消息发送，或重新引用原图；原课表未改动")
             value = (result.get("image") or {}).get("binary_data_base64")
         url = await asyncio.to_thread(image_data_url, value)
         content.append({"type": "image_url", "image_url": {"url": url}})

@@ -34,7 +34,9 @@ from .group_upcoming import format_group_upcoming, group_upcoming as collect_gro
 from .group_scope import annotate_roster, query_roster
 from .batch import apply_batch, cancel_batch, format_preview, prepare_batch, read_draft
 from .recognition import recognize
-from .presentation import command_query, format_query, render_group_current, render_timetable
+from .image_cache import InboundImages
+from .info_cards import info_request
+from .presentation import command_query, format_query, render_group_current, render_timetable, render_info
 from .wakeup import fetch_schedule as fetch_wakeup_schedule, to_ics as wakeup_to_ics
 
 HELP = """群聊课表（未指定成员时操作自己在本群的课表）
@@ -57,6 +59,7 @@ HELP = """群聊课表（未指定成员时操作自己在本群的课表）
 /课表 恢复 课程编号  —— 撤销该课程所有本地修改与停课
 /课表 提醒 开|关   /课表 时区 Asia/Shanghai
 /课表 课程 [科目关键词]   /课表 状态   /课表 清空 确认
+/课表 版本 [文字]   /课表 更新日志 [版本号] [文字] —— 默认图片
 /课表 群友 @成员 [今天|明天|本周|查询 日期 天数] [图片]
 /课表 管理 @成员 加课|调课|停课|改课|删课|恢复|解析|wakeup ...
 /课表 图片 [今天|明天|本周|YYYY-MM-DD] [天数1~31]
@@ -126,6 +129,7 @@ class TimetablePlugin(MaiBotPlugin):
         self.task = None
         self.selection_contexts = {}
         self.image_receipts = {}
+        self.inbound_images = InboundImages()
 
     def tool_error(self, exc):
         result = {"success": False, "content": str(exc), "error": str(exc)}
@@ -296,6 +300,20 @@ class TimetablePlugin(MaiBotPlugin):
         source_owner, source_stream, *_ = identity(source)
         if source_stream!=stream or source_owner not in {actor,target["owner"]} or str(source.get("message_id"))!=source_id or source.get("is_notify"):
             raise ValueError("课表原消息必须来自本人或管理目标在当前群的真实消息")
+        source = self.inbound_images.restore(source)
+        if source_id == request_id and any(isinstance(x, dict) and x.get("type") == "image"
+                and not x.get("binary_data_base64") for x in source.get("raw_message", [])):
+            # Command入参不含二进制，且当前命令可能还未落库/进入Maisaka。
+            # 优先使用公开消息接口读取已保存原图；原消息不存在时由识别器给出具体错误。
+            original = await self.ctx.message.get_by_id(source_id, stream_id=stream, include_binary_data=True)
+            if isinstance(original, dict) and "message_info" in original:
+                original_owner, original_stream, *_ = identity(original)
+                if (original_owner != source_owner or original_stream != stream
+                        or str(original.get("message_id")) != source_id or original.get("is_notify")):
+                    raise ValueError("读取的原图与当前消息身份不一致，未识别或修改课表")
+                original = self.inbound_images.restore(original)
+                if any(isinstance(x, dict) and x.get("type") == "image" for x in original.get("raw_message", [])):
+                    source = original
         async with self.locks[target["owner"]]:
             await self.writable_member(actor,target,create=True)
             zone = (await asyncio.to_thread(self.store.get_member,target["owner"]))["zone"]
@@ -407,6 +425,7 @@ class TimetablePlugin(MaiBotPlugin):
         self.task = asyncio.create_task(self.run(), name="group_timetable_reminders")
 
     async def on_unload(self):
+        self.inbound_images.clear()
         if self.task:
             self.task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -899,12 +918,19 @@ class TimetablePlugin(MaiBotPlugin):
         for chunk in chunks:
             await self.ctx.send.text(chunk,stream)
 
+    @HookHandler("chat.receive.before_process", name="capture_timetable_images", mode=HookMode.BLOCKING, timeout_ms=3000)
+    async def capture_timetable_images(self, message=None, **kwargs):
+        if self.config.plugin.enabled and isinstance(message, dict):
+            self.inbound_images.remember(message)
+        return {}
+
     @HookHandler("chat.receive.after_process",name="prepare_timetable_command",mode=HookMode.BLOCKING,timeout_ms=3000)
     async def prepare_timetable_command(self,message=None,**kwargs):
         # 只规范当前发送者真正以 /课表 开头的正文，保留原始引用/图片用于后续校验。
         # Host 仍负责正常的命令启用与权限检查，不在 Hook 直接执行命令。
         if not self.config.plugin.enabled or not isinstance(message,dict) or "raw_message" not in message:
             return {}
+        self.inbound_images.remember(message)
         if re.fullmatch(r"/课表(?:\s+[\s\S]*)?",own_text(message)) is None:
             return {}
         return {"modified_kwargs":{"message":{**message,"processed_plain_text":group_command_text(message)}}}
@@ -922,6 +948,19 @@ class TimetablePlugin(MaiBotPlugin):
         try:
             actor, stream = await self.register_member(message)
             body = group_command_text(message, text).removeprefix("/课表").strip()
+            document = await asyncio.to_thread(info_request, body, HELP)
+            if document:
+                title, content, image = document
+                if image:
+                    pages = await asyncio.to_thread(render_info, title, content)
+                    for page in pages:
+                        sent = await self.ctx.send.hybrid([{"type": "image", "content": base64.b64encode(page).decode()}],
+                                                          stream, return_details=True)
+                        if not isinstance(sent, dict) or sent.get("sent") is not True:
+                            raise ValueError("帮助/版本图片发送未成功，请改用对应指令加“文字”重试")
+                else:
+                    await self.send_command_output(content, stream)
+                return True, None, True
             confirm = re.fullmatch(r"(确认|取消)\s+(\S+)",body)
             if confirm:
                 found=await self.confirm_batch(actor,stream,message,confirm.group(2),confirm.group(1))

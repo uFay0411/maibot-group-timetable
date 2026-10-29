@@ -1,6 +1,6 @@
 [project]
 name = "maibot-group-timetable"
-version = "1.10.4"
+version = "1.10.5"
 description = "按群成员隔离的 ICS 课表与 MaiBot reply 课前提醒"
 requires-python = ">=3.10"
 dependencies = [

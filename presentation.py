@@ -13,6 +13,37 @@ from .query import query_schedule
 FONT_PATH = Path(__file__).parent / "assets" / "NotoSansCJKsc-Regular.otf"
 
 
+def render_info(title: str, text: str) -> list[bytes]:
+    """帮助与版本日志按完整行分页，图片无需浏览器或额外网络请求。"""
+    if len(text) > 40000:
+        raise ValueError("帮助/日志内容过长，请指定一个版本查询")
+    fonts = {size: ImageFont.truetype(str(FONT_PATH), size) for size in (22, 25, 36)}
+    canvas = Image.new("RGB", (1080, 2100), "#F1F5F9")
+    measure = ImageDraw.Draw(canvas)
+    lines = []
+    for paragraph in text.splitlines():
+        lines.extend(wrapped(measure, paragraph, fonts[25], 956, 100) if paragraph.strip() else [""])
+    pages = []
+    page_size = 46
+    for offset in range(0, max(1, len(lines)), page_size):
+        chunk = lines[offset:offset+page_size]
+        image = Image.new("RGB", (1080, 2100), "#F1F5F9")
+        draw = ImageDraw.Draw(image)
+        draw.rounded_rectangle((28, 25, 1052, 157), radius=22, fill="#172B42")
+        draw.text((58, 43), "mai课表 · " + title, font=fonts[36], fill="white")
+        draw.text((60, 104), "发送对应指令加“文字”可获取可复制内容", font=fonts[22], fill="#CFDFEB")
+        y = 189
+        for line in chunk:
+            draw.text((60, y), line.removeprefix("# "), font=fonts[25], fill="#172B42")
+            y += 38
+        count = max(1, (len(lines)+page_size-1)//page_size)
+        draw.text((60, y+14), f"第{len(pages)+1}/{count}页 · mai课表", font=fonts[22], fill="#586D80")
+        output = BytesIO()
+        image.crop((0, 0, 1080, min(2100, y+72))).save(output, format="PNG", optimize=True)
+        pages.append(output.getvalue())
+    return pages
+
+
 def command_query(store, owner: str, args: list[str], now=None) -> dict:
     args = list(args) or ["今天"]
     action, *values = args

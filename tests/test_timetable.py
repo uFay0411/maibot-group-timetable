@@ -310,6 +310,7 @@ def test_sdk_components_and_manifest():
         ("TOOL", "preview_timetable_batch"),
         ("TOOL", "confirm_timetable_batch"),
         ("HOOK_HANDLER", "prepare_timetable_command"),
+            ("HOOK_HANDLER", "capture_timetable_images"),
     }
     manifest = json.loads((Path(__file__).parents[1] / "_manifest.json").read_text(encoding="utf-8"))
     assert "maisaka.reply.generate" in manifest["capabilities"]

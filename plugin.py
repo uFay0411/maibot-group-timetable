@@ -35,6 +35,7 @@ from .group_scope import annotate_roster, query_roster
 from .batch import apply_batch, cancel_batch, format_preview, prepare_batch, read_draft
 from .recognition import recognize
 from .image_cache import InboundImages
+from .avatars import Avatars
 from .info_cards import info_request
 from .presentation import command_query, format_query, render_group_current, render_timetable, render_info
 from .wakeup import fetch_schedule as fetch_wakeup_schedule, to_ics as wakeup_to_ics
@@ -63,7 +64,7 @@ HELP = """群聊课表（未指定成员时操作自己在本群的课表）
 /课表 群友 @成员 [今天|明天|本周|查询 日期 天数] [图片]
 /课表 管理 @成员 加课|调课|停课|改课|删课|恢复|解析|wakeup ...
 /课表 图片 [今天|明天|本周|YYYY-MM-DD] [天数1~31]
-/课表 群内当前 [页码] [图片] —— 按下课时间从早到晚列出正在上课的群友
+/课表 群内当前 [页码] [文字] —— 默认图片，展示进行中/今日下一节/已结束/今日无课
 /课表 群友接下来 [未来7天|明天|YYYY-MM-DD] [天数1~31] [文字] [第N页] —— 默认图片
 /课表 文字导入 [合并|替换] 课表文字（也可引用原消息）
 /课表 图片导入 [合并|替换] 补充说明（带图或引用原图，需学期日期/节次钟点）
@@ -130,6 +131,7 @@ class TimetablePlugin(MaiBotPlugin):
         self.selection_contexts = {}
         self.image_receipts = {}
         self.inbound_images = InboundImages()
+        self.avatars = Avatars()
 
     def tool_error(self, exc):
         result = {"success": False, "content": str(exc), "error": str(exc)}
@@ -198,9 +200,12 @@ class TimetablePlugin(MaiBotPlugin):
             raise ValueError("本次请求查询过群友课表，请明确target_member或回传selection_token；不会默认修改自己的课表")
         return await self.target_member(actor, stream, target_member)
 
-    async def send_table_images(self, result: dict, target: dict, receipt: str = "") -> int:
+    async def send_table_images(self, result: dict, target: dict, receipt: str = "", avatars=None) -> int:
         renderer = render_group_current if result.get("query_type") in {"group_current","group_upcoming"} else render_timetable
-        pages = await asyncio.to_thread(renderer, result, target["name"])
+        if avatars is not None:
+            pages = await asyncio.to_thread(renderer, result, target["name"], avatars)
+        else:
+            pages = await asyncio.to_thread(renderer, result, target["name"])
         now = monotonic()
         self.image_receipts = {key: expiry for key, expiry in self.image_receipts.items() if expiry > now}
         for index, page in enumerate(pages):
@@ -230,7 +235,8 @@ class TimetablePlugin(MaiBotPlugin):
         if output_format == "image":
             target = {"owner": json.dumps([platform, group_id, "*group_current*"], separators=(",", ":")),
                       "stream": stream, "name": "群内当前上课"}
-            result["image_pages"] = await self.send_table_images(result, target, receipt)
+            avatars = await self.avatars.collect(self.ctx, result, source) if source else {}
+            result["image_pages"] = await self.send_table_images(result, target, receipt, avatars)
             result["image_sent"] = True
             result["content"] += " 图片已实际发送到当前群，只需按人设简短说明，不要重复生成图片。"
         result["content"] = model_visible_content(result)
@@ -396,19 +402,19 @@ class TimetablePlugin(MaiBotPlugin):
     @Tool(
         "query_group_current_courses",
         timeout_ms=180000,
-        description=("查询本群各群友按课表当前正在上的课，并按下课时间从早到晚排序。"
+        description=("查询本群今日课程状态看板，默认实际发送图片。正在上课按下课时间排序；当前没课则显示今日下一节；今日课程全部结束或今日无课单独标记。"
                      "用户问‘群里谁在上课’、‘大家现在都在上什么’、‘谁最早下课’、‘按下课时间排一下’时使用，"
                      "无需逐个查询成员。message_id是本次提问消息msg_id，群号和当前时刻由后端确定，不接受模型指定。"
                      "只包括当前群现有成员已建立的课表，关闭提醒仍参与；未知课表不能猜测。"
                      "请保持lessons顺序回复成员、科目、教室与下课时间，has_more时可继续查询next_page。"
-                     "用户要求图片时output_format=image，工具会实际分页发送。"),
+                     "默认output_format=image，工具会实际分页发送；用户明确要文字才用text。"),
         parameters={
             "message_id": {"type": "string", "required": True, "description": "本次群内当前上课提问的真实msg_id。"},
-            "output_format": {"type": "string", "enum": ["text", "image"], "default": "text", "description": "用户要图片时填image，否则文本数据交给reply自然回答。"},
+            "output_format": {"type": "string", "enum": ["text", "image"], "default": "image", "description": "默认发送状态看板图片；明确要文字时填text交给reply回答。"},
             "page": {"type": "integer", "minimum": 1, "default": 1, "description": "结果页码，默认1，每页50条；has_more时使用next_page。"},
         }, visibility="visible",
     )
-    async def query_group_current_courses(self, message_id="", output_format="text", page=1, **context):
+    async def query_group_current_courses(self, message_id="", output_format="image", page=1, **context):
         if not self.config.plugin.enabled:
             return {"success": False, "content": "课表插件已关闭。"}
         try:
@@ -427,6 +433,7 @@ class TimetablePlugin(MaiBotPlugin):
 
     async def on_unload(self):
         self.inbound_images.clear()
+        self.avatars.clear()
         if self.task:
             self.task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -985,10 +992,11 @@ class TimetablePlugin(MaiBotPlugin):
             current = re.fullmatch(r"(?:群内当前|群内\s+当前)(?:\s+([\s\S]*))?", body)
             if current:
                 values = shlex.split(current.group(1) or "")
-                image = "图片" in values
-                pages = [value for value in values if value != "图片"]
-                if len(pages) > 1 or (pages and not pages[0].isdigit()) or values.count("图片") > 1:
-                    raise ValueError("用法：/课表 群内当前 [页码] [图片]")
+                image = "文字" not in values
+                pages = [value for value in values if value not in {"图片", "文字"}]
+                if (len(pages) > 1 or (pages and not pages[0].isdigit()) or values.count("图片") > 1
+                        or values.count("文字") > 1 or {"图片", "文字"} <= set(values)):
+                    raise ValueError("用法：/课表 群内当前 [页码] [图片|文字]")
                 found = await self.current_group_result(actor, stream, "image" if image else "text", int(pages[0]) if pages else 1,source=message)
                 if not image:
                     await self.ctx.send.text(format_group_current(found), stream)

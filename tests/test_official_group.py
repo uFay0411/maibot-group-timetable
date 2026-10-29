@@ -49,7 +49,7 @@ def official(plugin, monkeypatch):
 
 async def test_official_current_tool_supports_openids_and_sorted_data(official):
     p, source, context = official
-    result = await p.query_group_current_courses(message_id="official-question", **context)
+    result = await p.query_group_current_courses(message_id="official-question", output_format="text", **context)
     assert result["success"] and [x["member_name"] for x in result["lessons"]] == ["Bob", "Alice"]
     assert result["members_with_timetable"] == 2 and result["group_member_count"] is None
     assert result["roster_source"] == "stored_timetables" and not result["roster_verified"]
@@ -59,6 +59,7 @@ async def test_official_current_tool_supports_openids_and_sorted_data(official):
 
 async def test_official_command_text_never_requests_numeric_qq(official):
     p, source, _ = official
+    source["raw_message"][0]["data"] += " 文字"
     await p.command(message=source)
     text = p.ctx.send.text.call_args.args[0]
     assert "Bob" in text and "Alice" in text and "QQ官方" in text
@@ -97,7 +98,7 @@ async def test_official_upcoming_text_uses_same_scope(official):
 async def test_historical_openids_work_without_adapter_metadata(official):
     p, source, context = official
     source["message_info"].pop("additional_config")
-    result = await p.query_group_current_courses(message_id="official-question", **context)
+    result = await p.query_group_current_courses(message_id="official-question", output_format="text", **context)
     assert result["success"] and result["roster_verified"] is False
 
 

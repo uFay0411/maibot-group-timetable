@@ -183,12 +183,15 @@ def render_timetable(result: dict, name: str) -> list[bytes]:
     return pages
 
 
-def render_group_current(result: dict, name: str = "") -> list[bytes]:
+def render_group_current(result: dict, name: str = "", avatars: dict[str, bytes] | None = None) -> list[bytes]:
     """保留群内当前/接下来查询的服务端排序，不在渲染时重新分组。"""
     if result.get("query_type") not in {"group_current","group_upcoming"} or len(result.get("lessons", [])) > 50:
         raise ValueError("请使用有效的群内课程查询结果生成图片")
     if not FONT_PATH.is_file():
         raise ValueError("课表中文字体缺失，请完整更新插件 assets 目录")
+    if result["query_type"] == "group_current":
+        from .group_board import render_board
+        return render_board(result, FONT_PATH, wrapped, avatars)
     fonts = {size: ImageFont.truetype(str(FONT_PATH), size) for size in (22, 25, 28, 38)}
     at = datetime.fromisoformat(result["queried_at"])
     upcoming = result.get("query_type") == "group_upcoming"

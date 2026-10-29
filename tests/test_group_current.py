@@ -40,7 +40,7 @@ def test_current_end_sort_differs_from_start_sort_and_excludes_not_active(store)
     store.import_ics(second, ics(uid="past", summary="已下课", start="20261026T070000", end="20261026T090000"), "合并")
     result = collect(store)
     assert [x["subject"] for x in result["lessons"]] == ["先下课", "后下课"]
-    assert result["members_in_class"] == 2 and result["sort_by"] == "end_ascending"
+    assert result["members_in_class"] == 2 and result["sort_by"] == "status_then_time"
     data = json.loads(result["content"].split("\n", 1)[1].split("\n回复要求：", 1)[0])
     assert data["lessons"][0]["member_name"] == "群友200"
 
@@ -48,7 +48,7 @@ def test_current_end_sort_differs_from_start_sort_and_excludes_not_active(store)
 @pytest.mark.parametrize("clock,expected", [("07:59", 0), ("08:00", 1), ("09:39", 1), ("09:40", 0)])
 def test_exact_current_class_boundaries(store, clock, expected):
     store.import_ics(register(store), ics(), "合并")
-    assert collect(store, now=dt(clock=clock))["total"] == expected
+    assert collect(store, now=dt(clock=clock))["members_in_class"] == expected
 
 
 def test_overnight_and_long_events_are_not_lost_to_day_or_24_hour_cutoff(store):
@@ -70,7 +70,7 @@ def test_rescheduled_into_current_window_uses_new_end_time_and_room(store):
     assert result["total"] == 1 and result["lessons"][0]["classroom"] == "新教室"
     assert result["lessons"][0]["end"].startswith("2026-10-26T09:30")
     store.change(owner, origin, {"start": stamp(dt("2026-10-28")), "end": stamp(dt("2026-10-28", "09:40"))})
-    assert collect(store)["total"] == 0
+    assert collect(store)["members_in_class"] == 0
 
 
 def test_cancel_deleted_course_and_reminders_off_have_distinct_meanings(store):
@@ -80,10 +80,10 @@ def test_cancel_deleted_course_and_reminders_off_have_distinct_meanings(store):
     assert collect(store)["total"] == 1
     lesson = lessons(store, owner)[0]
     store.change(owner, lesson, {"cancelled": True})
-    assert collect(store)["total"] == 0
+    assert collect(store)["members_in_class"] == 0
     store.restore(owner, lesson.course_id)
     store.patch(owner, lesson.course_id, {"deleted": True})
-    assert collect(store)["total"] == 0
+    assert collect(store)["members_in_class"] == 0
 
 
 def test_only_live_same_group_and_stream_members_with_tables_are_counted(store):
@@ -144,7 +144,7 @@ async def test_natural_group_tool_uses_one_roster_call_and_real_sorted_data(acti
     members["100"]["role"] = "member"
     lesson = lessons(p.store, bob)[0]
     p.store.change(bob, lesson, {"end": stamp(dt(clock="09:20"))})
-    result = await p.query_group_current_courses(message_id="question-123", **context)
+    result = await p.query_group_current_courses(message_id="question-123", output_format="text", **context)
     assert result["success"] and [x["user_id"] for x in result["lessons"]] == ["200", "100"]
     assert p.ctx.api.call.await_count == 1 and not p.ctx.send.text.called and not p.ctx.send.hybrid.called
     assert lessons(p.store, actor)[0].title == "高等数学"
@@ -152,7 +152,7 @@ async def test_natural_group_tool_uses_one_roster_call_and_real_sorted_data(acti
 
 async def test_current_command_text_and_png_are_supported(active_group):
     p, _, _, _, _, source = active_group
-    source["raw_message"] = [{"type": "text", "data": "/课表 群内当前"}]
+    source["raw_message"] = [{"type": "text", "data": "/课表 群内当前 文字"}]
     await p.command(message=source)
     assert "下课" in p.ctx.send.text.call_args.args[0] and "大学英语" in p.ctx.send.text.call_args.args[0]
     source["raw_message"] = [{"type": "text", "data": "/课表 群内 当前 图片"}]
@@ -165,10 +165,10 @@ async def test_current_command_text_and_png_are_supported(active_group):
 async def test_actor_must_still_belong_to_group_and_list_api_must_work(active_group):
     p, context, _, _, members, _ = active_group
     members.pop("100")
-    failed = await p.query_group_current_courses(message_id="question-123", **context)
+    failed = await p.query_group_current_courses(message_id="question-123", output_format="text", **context)
     assert not failed["success"] and "lessons" not in failed
     p.ctx.api.list.return_value = []
-    failed = await p.query_group_current_courses(message_id="question-123", **context)
+    failed = await p.query_group_current_courses(message_id="question-123", output_format="text", **context)
     assert not failed["success"]
 
 
@@ -176,7 +176,7 @@ async def test_tool_requires_question_identity_and_respects_enabled(active_group
     p, context, _, _, _, _ = active_group
     assert not (await p.query_group_current_courses(**context))["success"]
     p.config.plugin.enabled = False
-    result = await p.query_group_current_courses(message_id="question-123", **context)
+    result = await p.query_group_current_courses(message_id="question-123", output_format="text", **context)
     assert not result["success"] and not p.ctx.api.call.called
 
 

@@ -34,6 +34,7 @@ def plugin(store):
     p.store = store
     p._ctx = SimpleNamespace(logger=logging.getLogger("test"),
                              config=SimpleNamespace(get=AsyncMock(return_value=[])),
+                             chat=SimpleNamespace(get_avatar=AsyncMock(return_value={"status": "unsupported", "url": None})),
                              maisaka=SimpleNamespace(reply=SimpleNamespace(generate=AsyncMock(return_value={
                                  "success": True, "text": "高等数学要上课啦，08:00 在教一101，准备出发！"}))),
                              message=SimpleNamespace(get_by_id=AsyncMock(return_value=None)),

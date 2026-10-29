@@ -9,14 +9,14 @@ import json
 
 FILES = (
     ".gitignore", "__init__.py", "_manifest.json", "calendar_engine.py", "files.py", "imports.py",
-    "plugin.py", "query.py", "semantic.py", "matching.py", "management.py", "group_access.py", "group_current.py", "group_scope.py", "presentation.py", "image_cache.py", "info_cards.py",
+    "plugin.py", "query.py", "semantic.py", "matching.py", "management.py", "group_access.py", "group_current.py", "group_board.py", "avatars.py", "group_scope.py", "presentation.py", "image_cache.py", "info_cards.py",
     "wakeup.py", "_wakeup_protocol.py", "store.py", "batch.py", "recognition.py", "group_upcoming.py",
     "pyproject.toml", "requirements.txt", "README.md", "CHANGELOG.md",
     "LICENSE", "config.default.toml", "examples/demo.ics", "examples/timetable-preview.png", "examples/group-current-preview.png",
     "examples/group-upcoming-preview.png",
     "assets/NotoSansCJKsc-Regular.otf", "licenses/NotoSansCJK-OFL.txt", "tests/conftest.py", "tests/test_timetable.py",
     "tests/test_reply_latency.py", "tests/test_query.py", "tests/test_semantic.py", "tests/test_matching.py", "tests/test_imports.py",
-    "tests/test_image_import_info.py", "tests/test_official_group.py", "tests/test_management.py", "tests/test_natural_management.py", "tests/test_wakeup.py", "tests/test_group_images.py", "tests/test_group_current.py",
+    "tests/test_image_import_info.py", "tests/test_official_group.py", "tests/test_management.py", "tests/test_natural_management.py", "tests/test_wakeup.py", "tests/test_group_images.py", "tests/test_group_current.py", "tests/test_group_board.py", "tests/test_avatars.py",
     "tests/test_batch_input.py", "tests/test_group_upcoming.py",
     "patches/qq-official-adapter-upload-retry.patch", "licenses/WakeUpDecoder-APACHE-2.0.txt", "THIRD_PARTY_NOTICES.md", "scripts/build_release.py",
 )

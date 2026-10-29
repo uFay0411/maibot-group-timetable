@@ -27,3 +27,7 @@ the SIL Open Font License 1.1, included at `licenses/NotoSansCJK-OFL.txt`.
 The font is bundled for Chinese timetable rendering on Windows and Linux.
 
 `examples/timetable-preview.png` uses only synthetic demonstration data.
+
+# QQ avatar resources
+
+Group status boards optionally fetch public HTTPS QQ avatar CDN images from qlogo.cn/qpic.cn only after the Host avatar capability resolves the current account route. Images are bounded, resized and cached in memory; timetable data is never sent to these endpoints. Unsupported avatars use a local nickname initial. Bundled board previews contain synthetic data and locally drawn demonstration avatars only.

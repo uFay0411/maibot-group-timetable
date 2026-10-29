@@ -3,7 +3,7 @@
   "plugin_type": "tool",
   "id": "wu.group-timetable",
   "name": "群聊个人课表提醒",
-  "version": "1.10.7",
+  "version": "1.10.8",
   "description": "群友今日课程状态看板：头像、进行中、下一节、已结束与倒计时；保留群聊课表管理和提醒",
   "author": {
     "name": "Wu",

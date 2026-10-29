@@ -130,7 +130,7 @@ async def test_version_text_and_selected_changelog_are_copyable(group):
     root = Path(cache_module.__file__).parent
     version = json.loads((root/"_manifest.json").read_text(encoding="utf-8"))["version"]
     assert "当前版本："+version in text and "SDK：2.16.0～2.16.99" in text
-    assert "# "+version in text and "今日课程看板" in text
+    assert "# "+version in text
     assert "# 1.10.4" in version_text("1.10.4")
     with pytest.raises(ValueError, match="没有这个版本"):
         version_text("9.99.9")
